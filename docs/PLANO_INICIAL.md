@@ -14,10 +14,10 @@
 | Node / pnpm / Python / uv / git | 22.16 / 10.14 / 3.13.1 / 0.12.6 / 2.47 | OK |
 | Claude Code CLI | 2.1.273 no PATH | OK para o adaptador |
 | Codex CLI | 0.155.0-alpha só pela extensão do VS Code, fora do PATH | Adaptador recebe o caminho por configuração (`CODEX_BIN`) |
-| Ollama | **Não instalado** | Bloqueia a conversa local; instalar com `OLLAMA_MODELS` no D: |
+| Ollama | 0.40.14 + qwen3:1.7b, rodando na RX 550 via Vulkan (~10 tokens/s) | OK. O app da bandeja não sobe o servidor sozinho: a investigar |
 | D:\NIGHT | Repositório git iniciado em 03/11 (branch main) | OK |
 | PostgreSQL | 18 rodando na porta 5433 (o 17 também está instalado) | Banco do Night (D-002) |
-| Soaken | Cópia mais nova: `C:\Users\Joel\Desktop\Soaken` (Next.js, commit de 07/10) | Ler a parte de voz **só com permissão do Joel** |
+| Soaken | O app é `Desktop\PROFESSOR\tutor-pc` (`Desktop\Soaken` é só o site) | Lido com permissão em 03/11; o Kokoro de lá só fala inglês (D-004) |
 
 ## 2. Decisões de stack (propostas)
 
@@ -27,7 +27,7 @@
 4. **Ordem do STT:** começar com **whisper.cpp Small** (funciona com certeza) e testar o **Nemotron multilingual** em paralelo, pelos critérios da seção 17 do blueprint. O Nemotron só vira padrão depois de passar nesses critérios.
 5. **Sem MCP/ACP no MVP.** Os adaptadores chamam `claude -p` e `codex exec` em modo não interativo, dentro da worktree da tarefa.
 
-**Incertezas a testar antes de comprometer:** runtime do Nemotron multilingual no Windows/CPU; pronúncia PT-BR do Kokoro (G2P via espeak-ng?); RAM com Qwen3 1.7B + STT + TTS + VS Code; termos de uso do `claude -p`/`codex exec` acionados por um programa local.
+**Incertezas a testar antes de comprometer:** runtime do Nemotron multilingual no Windows/CPU; RAM com Qwen3 1.7B + STT + TTS + VS Code; termos de uso do `claude -p`/`codex exec` acionados por um programa local.
 
 ## 3. Marcos (cada um com critério de pronto)
 
@@ -75,11 +75,12 @@ O Codex trabalha numa worktree própria (`task`), e o Claude revisa o diff antes
 
 ## 7. O que o Joel precisa decidir/fazer
 
-1. Liberar espaço no C: ou confirmar que tudo do Night fica no D:.
-2. Instalar o Ollama e, depois, o `ollama pull qwen3:1.7b` (com `OLLAMA_MODELS=D:\...`).
-3. Autorizar o `git init` em D:\NIGHT.
-4. Autorizar a leitura da voz do Soaken (`C:\Users\Joel\Desktop\Soaken`), somente leitura.
-5. Confirmar a stack (Node + Python separado para voz).
+Feito em 03/11: espaço no C:, Ollama + Qwen, `git init`, leitura do Soaken, stack, Postgres 18.
+
+Pendente:
+1. Ouvir `lab/tts-pt/out/*.wav` e escolher a voz em PT-BR (`pf_dora` ou `pm_alex`).
+2. Caminho dos repositórios (Abstrike etc.) para ligar os projetos cadastrados.
+3. Gravar as 10+10 frases de teste do STT (M6).
 
 ## 8. Ajustes em relação ao blueprint
 
