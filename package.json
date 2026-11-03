@@ -1,0 +1,23 @@
+{
+  "name": "night",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Night: assistente pessoal local, voz primeiro, que delega tarefas ao Claude Code e ao Codex",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}
