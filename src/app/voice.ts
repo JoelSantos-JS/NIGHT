@@ -1,75 +1,131 @@
-// Night por voz: `pnpm night:voz`.
-//   Enter vazio  → abre o microfone (e cala o Night se ele estiver falando)
-//   Enter de novo → fecha o microfone, transcreve, responde e fala
-//   texto + Enter → mesma coisa, sem microfone
-//   "sair"        → fecha
+// Night por voz: `pnpm night:voz`. Automático: o microfone fica ouvindo, o Night percebe quando você
+// para de falar (~1,3 s de silêncio) e responde. Pausa curta no meio continua a mesma fala.
+//   Falar enquanto o Night fala → ele se cala e escuta
+//   Enter                       → pausa / retoma o microfone
+//   texto + Enter               → manda escrito
+//   "sair"                      → fecha
 import { createInterface } from 'node:readline';
 import { stdin, stdout } from 'node:process';
+import { normalize } from '../router/router.ts';
 import { SpeechService } from '../speech/speech-service.ts';
+import type { Transcript } from '../core/interfaces.ts';
 import { createNight } from './bootstrap.ts';
+import type { Reply } from './coordinator.ts';
 
 const DIM = '\u001b[2m';
 const RED = '\u001b[31m';
+const GREEN = '\u001b[32m';
 const RESET = '\u001b[0m';
+const STILL_RESEARCHING_MS = 12_000;
+
+// O Whisper "ouve" estas frases em ruído ou silêncio (vêm de legendas do treino). Não são o Joel falando.
+const HALLUCINATIONS = [
+  /^(obrigad[oa]( por assistir)?|tchau|valeu)[.!]*$/,
+  /legendas? (pela|por) comunidade|amara\.org|inscreva-se|se inscreva/,
+  /^(thank you|thanks for watching|you)[.!]*$/,
+  /^[\s.…!?,-]*$/,
+];
 
 const { memory, llm, llmOk, night } = await createNight();
 if (!llmOk) console.error(`${RED}Aviso: o Ollama não respondeu ou não tem o ${llm.model}. A conversa vai falhar até ele subir.${RESET}`);
 
 const speech = new SpeechService();
-console.log('Carregando a voz (Kokoro + Whisper), leva uns 30 s na primeira vez...');
+console.log('Carregando a voz (Kokoro + Whisper), leva uns 30 s...');
 const ready = await speech.start();
 console.log(`${DIM}voz pronta em ${(ready.loadMs / 1000).toFixed(0)} s · whisper ${ready.whisper} · mic: ${ready.input} · saída: ${ready.output}${RESET}`);
-console.log('\nEnter = falar (Enter de novo para parar) · ou digite · "sair" para fechar');
+
+let lastNightText = '';
+let paused = false;
+
+function say(reply: Reply) {
+  lastNightText = reply.text;
+  return speech.speak(reply.text, reply.language).catch((e) => console.error(`${RED}erro na fala: ${e.message}${RESET}`));
+}
+
+/** O Night ouvindo a própria voz (caixa de som em vez de fone) — não responder a isso. */
+function isEcho(text: string): boolean {
+  if (!lastNightText) return false;
+  const a = new Set(normalize(text).split(' '));
+  const b = normalize(lastNightText).split(' ');
+  const overlap = b.filter((w) => a.has(w)).length / Math.max(1, Math.min(a.size, b.length));
+  return a.size >= 3 && overlap >= 0.8;
+}
 
 async function respond(text: string, language?: 'pt-BR' | 'en' | null) {
   const t = performance.now();
   const reply = await night.handle(text, language ?? undefined);
-  const secs = ((performance.now() - t) / 1000).toFixed(1);
   if (reply.intent === 'stop-speaking') { speech.stop(); return; }
-  console.log(`night › ${reply.text}`);
-  console.log(`${DIM}        [${reply.intent} · ${reply.model} · ${reply.language} · ${secs}s]${RESET}`);
-  // Não espera terminar de falar: Enter durante a fala abre o microfone e interrompe.
-  speech.speak(reply.text, reply.language).catch((e) => console.error(`${RED}erro na fala: ${e.message}${RESET}`));
-  // Pesquisa: dá para continuar conversando; a resposta é mostrada e falada quando chegar.
-  reply.followUp?.then((later) => {
-    const total = ((performance.now() - t) / 1000).toFixed(0);
-    console.log(`\nnight › ${later.text}`);
-    console.log(`${DIM}        [${later.intent} · ${later.model} · ${total}s]${RESET}`);
-    return speech.speak(later.text, later.language);
-  }).catch((e) => console.error(`${RED}erro na pesquisa: ${e.message}${RESET}`));
+  console.log(`night › ${reply.text}  ${DIM}[${reply.intent} · ${reply.model} · ${((performance.now() - t) / 1000).toFixed(1)}s]${RESET}`);
+  say(reply);
+  if (!reply.followUp) return;
+  // Pesquisa: a conversa continua; se demorar, avisa uma vez que ainda está procurando.
+  let done = false;
+  const nudge = setTimeout(() => {
+    if (done) return;
+    const msg = reply.language === 'en' ? 'Still looking, hang on.' : 'Ainda tô pesquisando, só um pouco.';
+    console.log(`night › ${DIM}${msg}${RESET}`);
+    speech.speak(msg, reply.language).catch(() => {});
+  }, STILL_RESEARCHING_MS);
+  reply.followUp.then((later) => {
+    done = true;
+    clearTimeout(nudge);
+    console.log(`\nnight › ${later.text}  ${DIM}[${later.intent} · ${later.model} · ${((performance.now() - t) / 1000).toFixed(0)}s]${RESET}`);
+    return say(later);
+  }).catch((e) => { done = true; clearTimeout(nudge); console.error(`${RED}erro na pesquisa: ${e.message}${RESET}`); });
 }
 
+// Uma fala por vez, na ordem em que chegaram.
+let chain: Promise<void> = Promise.resolve();
+const enqueue = (job: () => Promise<void>) => {
+  chain = chain.then(job).catch((e) => console.error(`${RED}erro: ${(e as Error).message}${RESET}`));
+};
+
+function onUtterance(heard: Transcript) {
+  const text = heard.text.trim();
+  const n = normalize(text);
+  if (!text || HALLUCINATIONS.some((re) => re.test(n))) {
+    console.log(`${DIM}(ignorado: "${text}")${RESET}`);
+    return;
+  }
+  if (isEcho(text)) {
+    console.log(`${DIM}(ignorado, era a minha própria voz: "${text}")${RESET}`);
+    return;
+  }
+  console.log(`\nvocê › ${text}  ${DIM}[${heard.language} · ${heard.audioSeconds.toFixed(1)} s · transcrito em ${(heard.ms / 1000).toFixed(1)} s]${RESET}`);
+  enqueue(() => respond(text, heard.language));
+}
+
+speech.on('auto', (ev) => {
+  if (ev.type === 'speech_start') process.stdout.write(`${RED}● ouvindo...${RESET}${ev.bargeIn ? ` ${DIM}(parei de falar)${RESET}` : ''}\n`);
+  else if (ev.type === 'utterance') onUtterance(ev.transcript);
+  else if (ev.type === 'speech_discarded') process.stdout.write(`${DIM}(curto demais, ignorei)${RESET}\n`);
+  else if (ev.type === 'error') console.error(`${RED}erro na escuta: ${ev.message}${RESET}`);
+});
+
+await speech.startAuto();
+console.log(`\n${GREEN}🎙 Pode falar.${RESET} O Night responde quando você para (~1,3 s de silêncio).`);
+console.log(`${DIM}Enter = pausar/retomar o microfone · ou digite · "sair" para fechar${RESET}`);
+
 const rl = createInterface({ input: stdin, output: stdout });
-let busy = false;
 try {
   for await (const raw of rl) {
     const line = raw.trim();
     if (/^(sair|exit|quit)$/i.test(line)) break;
-    if (busy) continue;
-    busy = true;
-    try {
-      if (line) {
-        await respond(line);
-      } else if (!speech.listening) {
-        speech.startListening();
-        console.log(`${RED}● ouvindo...${RESET} ${DIM}(Enter para parar)${RESET}`);
-      } else {
-        const heard = await speech.stopListening();
-        if (!heard.text) {
-          console.log(`${DIM}(não ouvi nada em ${heard.audioSeconds.toFixed(1)} s de áudio)${RESET}`);
-        } else {
-          console.log(`você › ${heard.text}  ${DIM}[${heard.language} · ${heard.audioSeconds.toFixed(1)} s · transcrito em ${(heard.ms / 1000).toFixed(1)} s]${RESET}`);
-          await respond(heard.text, heard.language);
-        }
-      }
-    } catch (e) {
-      console.error(`${RED}erro: ${(e as Error).message}${RESET}`);
-    } finally {
-      busy = false;
+    if (line) {
+      enqueue(() => respond(line));
+    } else if (paused) {
+      await speech.startAuto();
+      paused = false;
+      console.log(`${GREEN}🎙 microfone ligado${RESET}`);
+    } else {
+      await speech.stopAuto();
+      paused = true;
+      console.log(`${DIM}⏸ microfone pausado (Enter para voltar)${RESET}`);
     }
   }
 } finally {
   rl.close();
+  await chain;
   await speech.close();
   await memory.close();
 }

@@ -71,6 +71,7 @@ class Speaker:
         self.pipes = {lang: KPipeline(lang_code=code, repo_id="hexgrad/Kokoro-82M", model=model)
                       for lang, code in KOKORO_LANG.items()}
         self.stop_flag = threading.Event()
+        self.speaking = threading.Event()  # a escuta automática usa para não ouvir a própria voz
         for lang in self.pipes:  # aquece: a 1ª síntese é bem mais lenta
             list(self._synth("ok", lang))
 
@@ -82,15 +83,19 @@ class Speaker:
     def speak(self, text: str, lang: str) -> bool:
         """Fala frase por frase; devolve True se foi interrompido."""
         self.stop_flag.clear()
-        for chunk in self._synth(text, lang if lang in self.pipes else "pt-BR"):
-            if self.stop_flag.is_set():
-                return True
-            sd.play(chunk, SAMPLE_RATE_OUT)
-            while sd.get_stream().active:
-                if self.stop_flag.wait(0.05):
-                    sd.stop()
+        self.speaking.set()
+        try:
+            for chunk in self._synth(text, lang if lang in self.pipes else "pt-BR"):
+                if self.stop_flag.is_set():
                     return True
-        return self.stop_flag.is_set()
+                sd.play(chunk, SAMPLE_RATE_OUT)
+                while sd.get_stream().active:
+                    if self.stop_flag.wait(0.05):
+                        sd.stop()
+                        return True
+            return self.stop_flag.is_set()
+        finally:
+            self.speaking.clear()
 
     def stop(self) -> None:
         self.stop_flag.set()
@@ -114,6 +119,7 @@ class Listener:
         self.stream: sd.InputStream | None = None
         self.chunks: list[np.ndarray] = []
         self.opened_at = 0.0
+        self.lock = threading.Lock()  # o Whisper é usado pela escuta automática e pelos comandos
 
     def start(self) -> None:
         if self.stream:
@@ -140,6 +146,10 @@ class Listener:
         return self.transcribe(audio, lang_hint)
 
     def transcribe(self, audio: np.ndarray, lang_hint: str | None) -> dict:
+        with self.lock:
+            return self._transcribe(audio, lang_hint)
+
+    def _transcribe(self, audio: np.ndarray, lang_hint: str | None) -> dict:
         audio_s = len(audio) / SAMPLE_RATE_IN
         if audio_s < 0.3:
             return {"text": "", "language": lang_hint, "audio_s": round(audio_s, 2), "ms": 0}
@@ -200,6 +210,34 @@ def main() -> None:
 
     threading.Thread(target=speak_worker, daemon=True).start()
 
+    # Escuta automática: o VAD acha a fala; a transcrição roda em outra thread para o VAD não parar.
+    from night_speech.auto import AutoListener
+
+    stt_q: queue.Queue = queue.Queue()
+
+    def on_auto_event(ev: dict) -> None:
+        if ev["type"] == "speech_start":
+            speaker.stop()  # o dono começou a falar: o Night se cala (barge-in)
+            send(ev)
+        elif ev["type"] == "utterance":
+            stt_q.put(ev)
+        else:
+            send(ev)
+
+    def stt_worker():
+        while True:
+            ev = stt_q.get()
+            if ev is None:
+                return
+            try:
+                r = listener.transcribe(ev["audio"], None)
+                send({"type": "utterance", "speech_s": ev["speech_s"], "cut": ev["cut"], **r})
+            except Exception as e:  # noqa: BLE001
+                send({"type": "error", "message": f"transcrição: {e}"})
+
+    threading.Thread(target=stt_worker, daemon=True).start()
+    auto = AutoListener(on_auto_event, speaker.speaking.is_set)
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -219,7 +257,15 @@ def main() -> None:
                 while not speak_q.empty():
                     job = speak_q.get_nowait()
                     send({"id": job.get("id"), "type": "spoken", "interrupted": True, "ms": 0})
+            elif kind == "auto_start":
+                auto.start()
+                send({"id": mid, "type": "auto", "active": True})
+            elif kind == "auto_stop":
+                auto.stop()
+                send({"id": mid, "type": "auto", "active": False})
             elif kind == "listen_start":
+                if auto.active:
+                    raise RuntimeError("a escuta automática está ligada; desligue antes de usar o aperta-e-fala")
                 speaker.stop()  # começou a falar: o Night se cala
                 listener.start()
                 send({"id": mid, "type": "listening"})
@@ -241,8 +287,10 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             send({"id": mid, "type": "error", "message": str(e)})
 
+    auto.stop()
     speaker.stop()
     speak_q.put(None)
+    stt_q.put(None)
 
 
 if __name__ == "__main__":

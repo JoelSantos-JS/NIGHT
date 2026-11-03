@@ -4,6 +4,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { PushToTalkStt, TextToSpeech, Transcript } from '../core/interfaces.ts';
@@ -21,14 +22,33 @@ export interface SpeechReady {
   output: string;
 }
 
-export class SpeechService implements TextToSpeech, PushToTalkStt {
+/** O que a escuta automática avisa sem ninguém pedir. */
+export type AutoEvent =
+  | { type: 'speech_start'; bargeIn: boolean }
+  | { type: 'utterance'; transcript: Transcript; cut: 'silence' | 'max' }
+  | { type: 'speech_discarded' }
+  | { type: 'error'; message: string };
+
+export class SpeechService extends EventEmitter<{ auto: [AutoEvent] }> implements TextToSpeech, PushToTalkStt {
   readonly engine = 'kokoro+faster-whisper';
   private proc: ChildProcessWithoutNullStreams | null = null;
   private nextId = 1;
   private waiting = new Map<number, { resolve: (m: Msg) => void; reject: (e: Error) => void }>();
   private listenId: number | null = null;
 
-  constructor(private readonly env: Record<string, string> = {}) {}
+  constructor(private readonly env: Record<string, string> = {}) {
+    super();
+  }
+
+  /** Liga a escuta automática: o Night acha sozinho o começo e o fim da sua fala. */
+  async startAuto(): Promise<void> {
+    await this.request({ type: 'auto_start' });
+  }
+
+  /** Desliga a escuta automática (o microfone fecha). */
+  async stopAuto(): Promise<void> {
+    await this.request({ type: 'auto_stop' });
+  }
 
   /** Sobe o processo e espera os modelos carregarem. */
   start(timeoutMs = 180_000): Promise<SpeechReady> {
@@ -62,7 +82,15 @@ export class SpeechService implements TextToSpeech, PushToTalkStt {
           resolve({ loadMs: Number(msg.load_ms), whisper: String(msg.whisper), input: String(msg.input), output: String(msg.output) });
           return;
         }
-        const w = msg.id != null ? this.waiting.get(msg.id) : undefined;
+        if (msg.id == null) {
+          // Mensagens sem id vêm da escuta automática.
+          if (msg.type === 'speech_start') this.emit('auto', { type: 'speech_start', bargeIn: Boolean(msg.barge_in) });
+          else if (msg.type === 'utterance') this.emit('auto', { type: 'utterance', transcript: toTranscript(msg), cut: msg.cut === 'max' ? 'max' : 'silence' });
+          else if (msg.type === 'speech_discarded') this.emit('auto', { type: 'speech_discarded' });
+          else if (msg.type === 'error') this.emit('auto', { type: 'error', message: String(msg.message) });
+          return;
+        }
+        const w = this.waiting.get(msg.id);
         if (!w) return;
         if (msg.type === 'listening') return; // confirmação intermediária; a resposta é o 'final'
         this.waiting.delete(msg.id!);
