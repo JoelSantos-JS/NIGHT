@@ -42,6 +42,8 @@ describe('regras do roteador', () => {
     ['Bom dia, Night!', null],
     ['What is a git branch?', null],
     ['Qual a diferença entre TCP e UDP?', null],
+    ['What is a git branch?', null],
+    ['o que é um merge?', null],
   ];
   for (const [text, expected] of cases) {
     test(`"${text}" → ${expected ?? 'sem regra'}`, () => assert.equal(kind(text), expected));
@@ -74,6 +76,11 @@ describe('idioma', () => {
     assert.equal(detectLanguage('save this idea for Abstrike'), 'en');
   });
   test('sem pista fica em português', () => assert.equal(detectLanguage('Abstrike'), 'pt-BR'));
+  test('"tô" é português, não "to"', () => {
+    assert.equal(detectLanguage('Tô cansado de estudar hoje'), 'pt-BR');
+    assert.equal(detectLanguage('tô com fome'), 'pt-BR');
+  });
+  test('inglês com "I" e "it"', () => assert.equal(detectLanguage("I think it works"), 'en'));
 });
 
 describe('NightRouter com modelo', () => {
@@ -84,6 +91,13 @@ describe('NightRouter com modelo', () => {
     const d = await new NightRouter(llm, names).route('salva essa ideia: teste', 'pt-BR');
     assert.equal(d.intent.kind, 'save-idea');
     assert.equal(d.model, 'rules');
+    assert.equal(llm.calls.length, 0);
+  });
+
+  test('pergunta sobre git não vira comando', async () => {
+    const llm = new FakeLlm(() => '{"intent":"status"}');
+    const d = await new NightRouter(llm, names).route('What is a git branch?', 'en');
+    assert.equal(d.intent.kind, 'chat');
     assert.equal(llm.calls.length, 0);
   });
 

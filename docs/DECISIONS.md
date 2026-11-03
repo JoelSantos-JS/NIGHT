@@ -46,3 +46,10 @@ programas abertos (servidor do crypto-arbitrage-pro 1,7 GB, proxy headroom 865 M
 Ficou o `base`: ida e volta Kokoro → Whisper acertou 4/4 frases e o idioma, mas errou palavras estrangeiras
 em PT ("karaokê", "parser"). Trocar para `small` com `NIGHT_WHISPER_MODEL=small` quando houver memória.
 O Nemotron continua como teste futuro (D-003).
+
+## D-007 — Personalidade bem-humorada; modelo continua o qwen3:1.7b (03/11/2026)
+Pedido do Joel: voz masculina e um pouco engraçada. Voz `pm_santa`/`am_puck` e personalidade "amigo esperto e
+meio debochado" só na conversa; confirmações de ação (salvei, cancelei, registrei) continuam secas e exatas,
+e sem piada quando o assunto é erro, dinheiro ou segurança. A resposta passa por `forSpeech` (tira emoji e
+markdown, que o 1.7B põe mesmo proibido). O humor do 1.7B é fraco e ele às vezes inventa fatos; o qwen3:4b
+não coube em 03/11 (faltou memória na GPU e na RAM com os outros programas abertos). Temperatura em 0.4.

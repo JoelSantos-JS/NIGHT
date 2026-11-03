@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import pg from 'pg';
-import { NightCoordinator } from '../src/app/coordinator.ts';
+import { forSpeech, NightCoordinator } from '../src/app/coordinator.ts';
 import type { Project } from '../src/core/types.ts';
 import { PgMemory } from '../src/memory/pg-memory.ts';
 import { NightRouter } from '../src/router/router.ts';
@@ -9,6 +9,14 @@ import { FakeLlm, resetTestDb, TEST_URL, truncateAll } from './helpers.ts';
 
 const project = (id: string, name: string): Project => ({
   id, name, description: '', repoPath: null, defaultBranch: null, allowedPaths: [], status: 'active',
+});
+
+describe('forSpeech', () => {
+  test('tira emoji e markdown, mantém acentos e pontuação', () => {
+    assert.equal(forSpeech('Bom dia! 😊 Vamos **lá**.'), 'Bom dia! Vamos lá.');
+    assert.equal(forSpeech('- item um\n- item dois 👍🏽'), 'item um\nitem dois');
+    assert.equal(forSpeech('Use `git worktree` ❤️'), 'Use git worktree');
+  });
 });
 
 describe('NightCoordinator', () => {

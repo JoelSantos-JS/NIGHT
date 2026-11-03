@@ -23,9 +23,15 @@ const HISTORY_TURNS = 6;
 
 const SYSTEM_PROMPT: Record<Language, string> = {
   'pt-BR': `Você é o Night, assistente pessoal do Joel, rodando no computador dele.
+Jeito: bem-humorado, como um amigo esperto e meio debochado. Responda primeiro e direito; se couber, feche
+com uma piadinha curta ou ironia leve (no máximo uma por resposta, e só se for natural).
+Fale sério, sem piada, quando o assunto for erro, problema, dinheiro, segurança ou algo que preocupe o Joel.
 Responda em português do Brasil, em 1 a 3 frases curtas, como fala (sem markdown, sem listas, sem emoji).
 Se não souber um fato atual, diga que não sabe; não invente. Você não executa código nem tarefas por conta própria.`,
   en: `You are Night, Joel's personal assistant, running on his computer.
+Style: good-humored, like a witty friend with a bit of sass. Answer first and correctly; if it fits, end with one
+short joke or light irony (at most one, and only if it comes naturally).
+Be serious, no jokes, when the topic is an error, a problem, money, security or something worrying Joel.
 Answer in English, in 1 to 3 short spoken sentences (no markdown, no lists, no emoji).
 If you don't know a current fact, say so; don't make things up. You don't run code or tasks on your own.`,
 };
@@ -38,6 +44,17 @@ const LANGUAGE_REMINDER: Record<Language, string> = {
 };
 
 const say = (lang: Language, pt: string, en: string) => (lang === 'en' ? en : pt);
+
+/** A resposta vai ser falada: o Qwen 1.7B põe emoji e markdown mesmo mandado não pôr. */
+export function forSpeech(text: string): string {
+  return text
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Modifier}\u{FE0F}\u{200D}]/gu, '')
+    .replace(/\*\*?|__|`+|^#+\s*/gm, '')
+    .replace(/^\s*[-•]\s+/gm, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\s+([.,!?])/g, '$1')
+    .trim();
+}
 
 export class NightCoordinator {
   private history: ConversationTurn[] = [];
@@ -88,11 +105,11 @@ export class NightCoordinator {
       role: t.role === 'owner' ? ('user' as const) : ('assistant' as const), content: t.text,
     }));
     try {
-      return await this.llm.chat([
+      return forSpeech(await this.llm.chat([
         { role: 'system', content: SYSTEM_PROMPT[language] },
         ...past,
         { role: 'user', content: `${LANGUAGE_REMINDER[language]} ${text}` },
-      ]);
+      ]));
     } catch (err) {
       return say(language, `Não consegui falar com o modelo local: ${(err as Error).message}`,
         `I couldn't reach the local model: ${(err as Error).message}`);

@@ -30,7 +30,8 @@ export class OllamaLlm implements LocalLlm {
         // Raciocínio do Qwen3 desligado: em conversa curta ele só atrasa a resposta.
         think: false,
         ...(opts.json ? { format: 'json' } : {}),
-        options: { temperature: opts.json ? 0 : 0.6 },
+        // 0.4 e não mais: no 1.7B, temperatura alta inventa fatos (medido em 03/11: "Linux num PDP-11 em 1964").
+        options: { temperature: opts.json ? 0 : 0.4 },
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
     });

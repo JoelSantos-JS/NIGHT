@@ -15,14 +15,15 @@ export function normalize(text: string): string {
   return text.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-const PT_HINTS = /\b(que|nao|voce|essa|esse|isso|para|pra|minha|meu|ta|esta|como|qual|quais|uma|tarefa|ideia|salva|obrigado|oi|ola|projeto|faz|tem)\b/g;
-const EN_HINTS = /\b(the|is|what|you|this|that|my|and|to|for|how|which|task|idea|save|thanks|hi|hello|project|are|please|can)\b/g;
+const PT_HINTS = /\b(que|nao|voce|essa|esse|isso|para|pra|minha|meu|ta|esta|como|qual|quais|uma|um|tarefa|ideia|salva|obrigado|oi|ola|projeto|faz|tem|de|do|da|no|na|com|eu|hoje|agora|muito|estou|sou|vou|me|mim|bom|dia)\b/g;
+// "to" fica de fora: sem acento, "tô" vira "to" e o português passava por inglês.
+const EN_HINTS = /\b(the|is|what|you|this|that|my|and|for|how|which|task|idea|save|thanks|hi|hello|project|are|please|can|i|im|it|of|in|do)\b/g;
 
 /** Palpite de idioma pelo texto. Empate fica em português, que é o padrão do dono. */
 export function detectLanguage(text: string): Language {
   const raw = text.toLowerCase();
   const n = normalize(text);
-  const pt = (n.match(PT_HINTS)?.length ?? 0) + (/[ãõçáéêíóú]/.test(raw) ? 2 : 0);
+  const pt = (n.match(PT_HINTS)?.length ?? 0) + (/[ãõçáàâéêíóôú]/.test(raw) ? 2 : 0);
   const en = n.match(EN_HINTS)?.length ?? 0;
   return en > pt ? 'en' : 'pt-BR';
 }
@@ -51,7 +52,8 @@ const REJECT = /^(eu )?(rejeito|rejeita|rejeitar|descarta|descarte|descartar|rej
 const CODE_VERB = /\b(implementa|implemente|implementar|cria|crie|criar|escreve|escreva|escrever|corrige|corrija|corrigir|refatora|refatore|conserta|conserte|adiciona|adicione|build|implement|write|fix|refactor|create|add)\b/;
 const CODE_NOUN = /\b(codigo|code|feature|funcao|function|parser|bug|testes?|tests?|branch|modulo|module|api|endpoint|script|classe|class|componente|component|docker|deploy|migracao|migration)\b/;
 const DELEGATE = /\b(pede|peca|pedir|manda|mande|fala|diz)\b.{0,6}\b(pro|para o|ao|o)\b.{0,3}\b(claude|codex)\b|\b(ask|tell|have|use|let)\b.{0,6}\b(claude|codex)\b|\b(use|usa|usar|com o)\b.{0,3}\b(claude|codex)\b/;
-const COMMANDISH = /\b(ideias?|ideas?|tarefas?|tasks?|projetos?|projects?|claude|codex|branch|merge|status)\b/;
+// "branch", "merge" e "status" ficam de fora: aparecem demais em pergunta comum ("o que é uma branch?").
+const COMMANDISH = /\b(ideias?|ideas?|tarefas?|tasks?|projetos?|projects?|claude|codex)\b/;
 
 /** Tira o "salva essa ideia para o Abstrike:" do começo e devolve só a ideia (pode ficar vazio). */
 export function ideaBody(original: string, projectName: string | null): string {
