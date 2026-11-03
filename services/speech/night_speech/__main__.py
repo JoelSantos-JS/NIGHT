@@ -147,9 +147,13 @@ class Listener:
         language = {"pt-BR": "pt", "en": "en"}.get(lang_hint or "")
         if not language:
             # Só PT ou EN: entre os dois, o mais provável. Evita o Whisper "achar" galego ou espanhol.
+            # Fala curta engana a detecção ("Bom dia, Night!" em 1,4 s saiu inglês, "Bon Gia night"):
+            # abaixo de 2,5 s, inglês só se for o dobro mais provável. Na dúvida, português (o padrão do Joel).
             _, _, probs = self.model.detect_language(audio)
             p = dict(probs)
-            language = "en" if p.get("en", 0) > p.get("pt", 0) else "pt"
+            p_en, p_pt = p.get("en", 0), p.get("pt", 0)
+            margin = 2.0 if audio_s < 2.5 else 1.0
+            language = "en" if p_en > p_pt * margin else "pt"
         # Os nomes próprios no prompt ajudam o Whisper a escrevê-los certo.
         segments, _ = self.model.transcribe(audio, language=language, vad_filter=True, beam_size=5,
                                             initial_prompt="Night, Claude, Codex, Soaken.")

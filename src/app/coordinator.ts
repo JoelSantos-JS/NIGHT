@@ -217,7 +217,7 @@ export class NightCoordinator {
       return say(language, project ? `Não tem ideia guardada no ${project.name}.` : 'Não tem ideia guardada.',
         project ? `No saved ideas for ${project.name}.` : 'No saved ideas.');
     }
-    const list = ideas.map((i, n) => `${n + 1}: ${i.title}`).join('. ');
+    const list = ideas.map((i, n) => `${n + 1}: ${i.title.replace(/[.!?…\s]+$/, '')}`).join('. ');
     return say(language, `${ideas.length === 1 ? 'Uma ideia' : `${ideas.length} ideias`}${project ? ` no ${project.name}` : ''}. ${list}.`,
       `${ideas.length === 1 ? 'One idea' : `${ideas.length} ideas`}${project ? ` for ${project.name}` : ''}. ${list}.`);
   }
