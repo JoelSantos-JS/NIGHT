@@ -37,3 +37,12 @@ produz esses intents. Frase sem regra mas com cara de comando vai ao Qwen em JSO
 Cada decisão vai para a tabela `route_log` (modelo, motivo, cota premium).
 Medido com qwen3:1.7b: a instrução de idioma só é obedecida quando vai no começo da fala do dono (5/5),
 não no system nem no fim da fala (0/5).
+
+## D-006 — STT: faster-whisper no mesmo processo Python da voz; `base` por enquanto (03/11/2026)
+O faster-whisper (CTranslate2, int8, CPU) substitui o whisper.cpp do plano: é o mesmo Whisper, roda no mesmo
+processo do Kokoro e evita um segundo runtime. Detecção de idioma restrita a PT/EN.
+O `small` não coube na RAM em 03/11: o PC estava com 2 GB livres de memória total, por causa dos outros
+programas abertos (servidor do crypto-arbitrage-pro 1,7 GB, proxy headroom 865 MB, VS Code, navegadores).
+Ficou o `base`: ida e volta Kokoro → Whisper acertou 4/4 frases e o idioma, mas errou palavras estrangeiras
+em PT ("karaokê", "parser"). Trocar para `small` com `NIGHT_WHISPER_MODEL=small` quando houver memória.
+O Nemotron continua como teste futuro (D-003).

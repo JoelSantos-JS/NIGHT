@@ -23,6 +23,21 @@ export interface SpeechToText {
   close(): Promise<void>;
 }
 
+export interface Transcript {
+  text: string;
+  language: Language | null;
+  audioSeconds: number;
+  /** Tempo de transcrição depois que o microfone fechou. */
+  ms: number;
+}
+
+/** Aperta-e-fala (blueprint §6): o microfone só abre entre startListening e stopListening. */
+export interface PushToTalkStt {
+  readonly listening: boolean;
+  startListening(): void;
+  stopListening(languageHint?: Language): Promise<Transcript>;
+}
+
 export interface TextToSpeech {
   readonly engine: string;
   /** Resolve quando terminou de falar ou foi interrompido por stop(). */
