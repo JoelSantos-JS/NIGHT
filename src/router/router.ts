@@ -52,6 +52,16 @@ const REJECT = /^(eu )?(rejeito|rejeita|rejeitar|descarta|descarte|descartar|rej
 const CODE_VERB = /\b(implementa|implemente|implementar|cria|crie|criar|escreve|escreva|escrever|corrige|corrija|corrigir|refatora|refatore|conserta|conserte|adiciona|adicione|build|implement|write|fix|refactor|create|add)\b/;
 const CODE_NOUN = /\b(codigo|code|feature|funcao|function|parser|bug|testes?|tests?|branch|modulo|module|api|endpoint|script|classe|class|componente|component|docker|deploy|migracao|migration)\b/;
 const DELEGATE = /\b(pede|peca|pedir|manda|mande|fala|diz)\b.{0,6}\b(pro|para o|ao|o)\b.{0,3}\b(claude|codex)\b|\b(ask|tell|have|use|let)\b.{0,6}\b(claude|codex)\b|\b(use|usa|usar|com o)\b.{0,3}\b(claude|codex)\b/;
+// Pedido explícito de pesquisa, ou pergunta sobre algo que muda (preço, notícia, resultado...).
+// "hoje"/"agora" sozinhos não contam: "tô cansado hoje" não é pesquisa.
+const RESEARCH = new RegExp([
+  /\b(pesquisa|pesquise|pesquisar|procura|procure|busca|busque|googla|googlar)\b.{0,30}\b(internet|web|google|sobre|pra mim|para mim)\b/.source,
+  /^(pesquisa|pesquise|search|look up|research|google)\b/.source,
+  /\b(search|look up|research|google)\b.{0,20}\b(for|about|the|on)\b/.source,
+  /\b(qual|quais|quanto|quanta|quem|quando|como (esta|ta)|o que)\b.{0,40}\b(cotacao|preco|noticias?|ultim[ao]s?|recentes?|atual|atualmente|lancamento|lancou|resultado|placar|previsao do tempo|dolar|bitcoin)\b/.source,
+  /\b(what|who|when|how much|how is)\b.{0,40}\b(price|news|latest|recent|current|currently|released|score|weather|forecast)\b/.source,
+].join('|'));
+
 // "branch", "merge" e "status" ficam de fora: aparecem demais em pergunta comum ("o que é uma branch?").
 const COMMANDISH = /\b(ideias?|ideas?|tarefas?|tasks?|projetos?|projects?|claude|codex)\b/;
 
@@ -80,6 +90,7 @@ export function ruleIntent(text: string, projectNames: string[]): Intent | null 
   if (SAVE_IDEA.test(n)) return { kind: 'save-idea', projectHint: project, text: ideaBody(text, project) };
   if (FIND_IDEAS.test(n)) return { kind: 'find-ideas', projectHint: project, query: '' };
   if (STATUS.test(n)) return { kind: 'status', taskHint: project };
+  if (RESEARCH.test(n)) return { kind: 'research', query: text.trim() };
   if (DELEGATE.test(n) || (CODE_VERB.test(n) && CODE_NOUN.test(n))) {
     return { kind: 'coding-task', projectHint: project, objective: text.trim(), agent: agentIn(n) };
   }
@@ -87,14 +98,15 @@ export function ruleIntent(text: string, projectNames: string[]): Intent | null 
 }
 
 const CLASSIFY_PROMPT = `Classifique o pedido do usuário. Responda SÓ com JSON:
-{"intent": "chat" | "save-idea" | "find-ideas" | "status" | "coding-task", "text": "<a ideia ou o objetivo, se houver>"}
+{"intent": "chat" | "save-idea" | "find-ideas" | "status" | "coding-task" | "research", "text": "<a ideia ou o objetivo, se houver>"}
 - save-idea: quer guardar uma ideia.
 - find-ideas: quer ver ideias guardadas.
 - status: pergunta sobre tarefas em andamento.
 - coding-task: quer que um agente escreva ou mude código.
+- research: precisa de fato atual ou de pesquisa na internet (preço, notícia, versão, evento recente).
 - chat: qualquer outra coisa (pergunta, conversa, explicação).`;
 
-const LLM_INTENTS = new Set(['chat', 'save-idea', 'find-ideas', 'status', 'coding-task']);
+const LLM_INTENTS = new Set(['chat', 'save-idea', 'find-ideas', 'status', 'coding-task', 'research']);
 
 export class NightRouter implements ModelRouter {
   constructor(
@@ -105,6 +117,7 @@ export class NightRouter implements ModelRouter {
   async route(text: string, _language: Language): Promise<RouteDecision> {
     const names = await this.projectNames();
     const byRule = ruleIntent(text, names);
+    // Pesquisa: a regra só reconhece; quem gasta cota e grava o modelo de verdade é o coordenador.
     if (byRule) return { intent: byRule, model: 'rules', reason: 'regra fixa', usedPremiumQuota: false };
 
     const n = normalize(text);
@@ -138,6 +151,7 @@ export class NightRouter implements ModelRouter {
       case 'find-ideas': return { kind: 'find-ideas', projectHint: project, query: '' };
       case 'status': return { kind: 'status', taskHint: project };
       case 'coding-task': return { kind: 'coding-task', projectHint: project, objective: text.trim(), agent: agentIn(n) };
+      case 'research': return { kind: 'research', query: text.trim() };
       default: return { kind: 'chat' };
     }
   }

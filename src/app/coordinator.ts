@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto';
 import type { Intent, LocalLlm, Memory, ModelRouter } from '../core/interfaces.ts';
 import type { ConversationTurn, Language, Project, Task } from '../core/types.ts';
 import { FINAL_TASK_STATUSES } from '../core/types.ts';
+import type { ResearchAgent } from '../agents/research.ts';
+import { QuotaError } from '../agents/research.ts';
 import { detectLanguage } from '../router/router.ts';
 
 export interface Reply {
@@ -17,6 +19,8 @@ export interface Reply {
   language: Language;
   intent: Intent['kind'];
   model: string;
+  /** Resposta que chega depois (pesquisa): quem chamou fala/mostra quando resolver. */
+  followUp?: Promise<Reply>;
 }
 
 const HISTORY_TURNS = 6;
@@ -65,6 +69,8 @@ export class NightCoordinator {
     private readonly memory: Memory,
     private readonly router: ModelRouter,
     private readonly llm: LocalLlm,
+    /** Em ordem de preferência; o próximo só entra se o anterior falhar ou estiver no limite. */
+    private readonly researchers: ResearchAgent[] = [],
   ) {}
 
   async handle(text: string, languageOverride?: Language): Promise<Reply> {
@@ -77,8 +83,13 @@ export class NightCoordinator {
     }
 
     const decision = await this.router.route(text, language);
-    await this.memory.logRoute({ text, language, decision });
     const { intent } = decision;
+    if (intent.kind === 'research') {
+      // O route_log desta vai depois, com o modelo que de fato respondeu e o uso de cota.
+      const followUp = this.research(intent.query, language, decision.reason);
+      return { ...this.finish(text, language, say(language, 'Vou pesquisar isso, já te falo.', "I'll look that up, back in a moment."), 'research', 'rules'), followUp };
+    }
+    await this.memory.logRoute({ text, language, decision });
     let out: string;
     switch (intent.kind) {
       case 'chat': out = await this.chat(text, language); break;
@@ -91,6 +102,13 @@ export class NightCoordinator {
       case 'stop-speaking': out = ''; break;
     }
     return this.finish(text, language, out, intent.kind, decision.model);
+  }
+
+  /** Resposta que chega depois: a pergunta já está no histórico, só entra a fala do Night. */
+  private lateReply(language: Language, text: string, intent: Intent['kind'], model: string): Reply {
+    this.history.push({ role: 'night', text, at: new Date().toISOString() });
+    this.history = this.history.slice(-HISTORY_TURNS * 2);
+    return { text, language, intent, model };
   }
 
   private finish(input: string, language: Language, text: string, intent: Intent['kind'], model: string): Reply {
@@ -114,6 +132,36 @@ export class NightCoordinator {
       return say(language, `Não consegui falar com o modelo local: ${(err as Error).message}`,
         `I couldn't reach the local model: ${(err as Error).message}`);
     }
+  }
+
+  /** Tenta cada pesquisador em ordem. Nunca cai para modelo pago por API: só as CLIs da assinatura. */
+  private async research(query: string, language: Language, routeReason: string): Promise<Reply> {
+    const failures: string[] = []; // detalhe técnico: vai para o route_log
+    const spoken: string[] = []; // curto: vai para a voz
+    for (const agent of this.researchers) {
+      try {
+        const { answer, ms } = await agent.ask(query, language);
+        await this.memory.logRoute({
+          text: query, language,
+          decision: { intent: { kind: 'research', query }, model: agent.id, reason: `${routeReason}; respondeu em ${(ms / 1000).toFixed(0)} s`, usedPremiumQuota: true },
+        });
+        return this.lateReply(language, forSpeech(answer), 'research', agent.id);
+      } catch (err) {
+        const quota = err instanceof QuotaError;
+        failures.push(`${agent.id}: ${quota ? 'no limite de uso' : (err as Error).message.slice(0, 200)}`);
+        const name = agent.id.startsWith('codex') ? 'o Codex' : agent.id.startsWith('claude') ? 'o Claude' : agent.id;
+        spoken.push(say(language, `${name} ${quota ? 'está no limite de uso' : 'deu erro'}`,
+          `${name.replace(/^o /, '')} ${quota ? 'is at its usage limit' : 'failed'}`));
+      }
+    }
+    await this.memory.logRoute({
+      text: query, language,
+      decision: { intent: { kind: 'research', query }, model: 'none', reason: `pesquisa falhou: ${failures.join(' | ') || 'nenhum pesquisador configurado'}`, usedPremiumQuota: false },
+    });
+    const why = spoken.length ? spoken.join(say(language, ' e ', ' and ')) : say(language, 'não tem pesquisador configurado', 'no researcher is configured');
+    return this.lateReply(language,
+      say(language, `Não consegui pesquisar agora: ${why}. E não vou chutar a resposta.`, `I couldn't look it up right now: ${why}. And I won't guess.`),
+      'research', 'none');
   }
 
   private async resolveProject(hint: string | null): Promise<Project | null> {

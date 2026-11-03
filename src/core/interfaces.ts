@@ -53,6 +53,8 @@ export type Intent =
   | { kind: 'find-ideas'; projectHint: string | null; query: string }
   | { kind: 'status'; taskHint: string | null }
   | { kind: 'coding-task'; projectHint: string | null; objective: string; agent: AgentName | null }
+  /** Fato atual ou pesquisa: vai para um modelo menor do Codex/Claude com busca na internet (D-009). */
+  | { kind: 'research'; query: string }
   | { kind: 'approval'; decision: 'approve' | 'reject'; taskHint: string | null }
   | { kind: 'cancel'; taskHint: string | null }
   | { kind: 'stop-speaking' };

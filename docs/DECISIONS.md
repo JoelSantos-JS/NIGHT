@@ -63,3 +63,17 @@ Com o projeto pesado do Joel fechado (memória livre de 2 para 14,7 GB), medido 
 - Whisper small × base em 3 frases PT: small acerta mais ("karaoke", "O Claude", "pro") e gasta 4,5 s por frase
   contra 1,8 s. Padrão `small`; se não couber na memória, o serviço cai sozinho para `base`.
 O 1.7B continua inventando fato quando pedem curiosidade ("Linux num PDP-11 em 1964", duas vezes).
+
+## D-009 — Quem responde o quê: local, modelos menores para pesquisa, maiores só para código (03/11/2026)
+Decisão do Joel:
+- Conversa do dia a dia: qwen3:1.7b local (grátis).
+- Pesquisa e fato atual: modelos MENORES pela assinatura, com busca na internet. Ordem: Codex `gpt-6-luna`
+  (`codex exec`, sandbox read-only, `web_search="live"`, pasta temporária vazia), depois Claude `haiku`
+  (`claude -p`, só WebSearch/WebFetch, Bash/Edit/Write bloqueados). Nunca API paga.
+- Código e trabalho pesado: modelos MAIORES (Codex `gpt-6-astra`, Claude padrão) — entra no M5.
+A pesquisa é reconhecida por regra (pedido explícito, ou pergunta sobre preço/notícia/versão/resultado) ou pelo
+Qwen no ambíguo. O Night responde na hora "vou pesquisar" e fala o resultado quando chega. Se os dois
+pesquisadores falharem, ele diz isso e não chuta; o motivo técnico vai para o `route_log`.
+Não testado de ponta a ponta em 03/11: o Codex estava no limite de uso até 19:22, e o Claude não roda dentro
+da sessão do Claude Code em que o teste foi feito (roda normal no terminal do Joel). Modelos por variável:
+`NIGHT_RESEARCH_CODEX_MODEL`, `NIGHT_RESEARCH_CLAUDE_MODEL`.

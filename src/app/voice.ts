@@ -30,6 +30,13 @@ async function respond(text: string, language?: 'pt-BR' | 'en' | null) {
   console.log(`${DIM}        [${reply.intent} · ${reply.model} · ${reply.language} · ${secs}s]${RESET}`);
   // Não espera terminar de falar: Enter durante a fala abre o microfone e interrompe.
   speech.speak(reply.text, reply.language).catch((e) => console.error(`${RED}erro na fala: ${e.message}${RESET}`));
+  // Pesquisa: dá para continuar conversando; a resposta é mostrada e falada quando chegar.
+  reply.followUp?.then((later) => {
+    const total = ((performance.now() - t) / 1000).toFixed(0);
+    console.log(`\nnight › ${later.text}`);
+    console.log(`${DIM}        [${later.intent} · ${later.model} · ${total}s]${RESET}`);
+    return speech.speak(later.text, later.language);
+  }).catch((e) => console.error(`${RED}erro na pesquisa: ${e.message}${RESET}`));
 }
 
 const rl = createInterface({ input: stdin, output: stdout });

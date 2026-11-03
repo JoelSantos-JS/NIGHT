@@ -36,3 +36,14 @@ export class FakeLlm implements LocalLlm {
     return this.answer(messages, !!opts.json);
   }
 }
+
+/** Pesquisador falso: devolve a resposta, ou lança o erro, e guarda as perguntas. */
+export class FakeResearcher {
+  questions: string[] = [];
+  constructor(readonly id: string, private readonly behavior: string | Error) {}
+  async ask(question: string): Promise<{ answer: string; ms: number }> {
+    this.questions.push(question);
+    if (this.behavior instanceof Error) throw this.behavior;
+    return { answer: this.behavior, ms: 1234 };
+  }
+}
