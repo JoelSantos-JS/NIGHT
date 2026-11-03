@@ -86,6 +86,15 @@ export interface NewIdea {
   tags?: string[];
 }
 
+export interface ActivityEntry {
+  at: string;
+  text: string;
+  intent: Intent['kind'];
+  /** 'rules', 'qwen3:1.7b', 'codex:gpt-6-luna', 'claude:haiku'... */
+  model: string;
+  reply: string | null;
+}
+
 export interface Memory {
   /** Só resolve depois de gravado de verdade: aí o Night pode dizer "salvei". */
   saveIdea(idea: NewIdea): Promise<Idea>;
@@ -111,8 +120,10 @@ export interface Memory {
   decideApproval(id: Id, decision: 'approved' | 'rejected'): Promise<Approval>;
   listPendingApprovals(): Promise<Approval[]>;
 
-  /** Grava a decisão do roteador (modelo, motivo, cota premium). */
-  logRoute(entry: { text: string; language: Language; decision: RouteDecision; taskId?: Id | null }): Promise<void>;
+  /** Grava a decisão do roteador (modelo, motivo, cota premium) e o que foi respondido. */
+  logRoute(entry: { text: string; language: Language; decision: RouteDecision; reply?: string; taskId?: Id | null }): Promise<void>;
+  /** Últimos pedidos e quem respondeu o quê, do mais antigo para o mais novo: base do contexto compartilhado. */
+  recentActivity(limit: number): Promise<ActivityEntry[]>;
 
   close(): Promise<void>;
 }

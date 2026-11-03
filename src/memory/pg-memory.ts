@@ -6,7 +6,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import type { Memory, NewIdea, RouteDecision } from '../core/interfaces.ts';
+import type { ActivityEntry, Memory, NewIdea, RouteDecision } from '../core/interfaces.ts';
 import type {
   Approval, ApprovalAction, Id, Idea, IdeaStatus, Language, Project, Task, TaskEvent, TaskEventType, TaskStatus,
 } from '../core/types.ts';
@@ -294,13 +294,21 @@ export class PgMemory implements Memory {
     return rows.map(toApproval);
   }
 
-  async logRoute(e: { text: string; language: Language; decision: RouteDecision; taskId?: Id | null }): Promise<void> {
+  async logRoute(e: { text: string; language: Language; decision: RouteDecision; reply?: string; taskId?: Id | null }): Promise<void> {
     await this.pool.query(
-      `INSERT INTO route_log (id, language, text, intent, model, reason, used_premium, task_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      `INSERT INTO route_log (id, language, text, intent, model, reason, used_premium, task_id, reply)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [randomUUID(), e.language, e.text, e.decision.intent.kind, e.decision.model, e.decision.reason,
-        e.decision.usedPremiumQuota, e.taskId ?? null],
+        e.decision.usedPremiumQuota, e.taskId ?? null, e.reply ?? null],
     );
+  }
+
+  async recentActivity(limit: number): Promise<ActivityEntry[]> {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM (SELECT at, text, intent, model, reply FROM route_log ORDER BY at DESC LIMIT $1) r ORDER BY at`,
+      [limit],
+    );
+    return rows.map((r) => ({ at: iso(r.at)!, text: r.text, intent: r.intent, model: r.model, reply: r.reply }));
   }
 
   async close(): Promise<void> {

@@ -77,3 +77,13 @@ pesquisadores falharem, ele diz isso e não chuta; o motivo técnico vai para o 
 Não testado de ponta a ponta em 03/11: o Codex estava no limite de uso até 19:22, e o Claude não roda dentro
 da sessão do Claude Code em que o teste foi feito (roda normal no terminal do Joel). Modelos por variável:
 `NIGHT_RESEARCH_CODEX_MODEL`, `NIGHT_RESEARCH_CLAUDE_MODEL`.
+
+## D-010 — Contexto compartilhado entre os agentes (03/11/2026)
+Pedido do Joel: "tem que estar tudo conectado, os agentes têm que ter noção um do outro".
+Todo pedido a um agente (hoje: pesquisa; depois: código) leva um bloco montado do banco por
+`src/agents/shared-context.ts`: quem ele é, quem são os outros agentes e para que serve cada um, os últimos
+8 pedidos com quem respondeu o quê, e as tarefas abertas. Até 2500 caracteres, cortando o mais antigo.
+O `route_log` agora guarda a resposta (`reply`, migração 003). Ao reiniciar, o Night recupera a conversa
+recente do banco, então lembra também do que o Codex e o Claude responderam.
+O bloco vai marcado como contexto, não instrução. O ai-memory do Akita (blueprint §18) pode substituir isto
+quando houver motivo; por enquanto o banco do Night basta e funciona no Windows.

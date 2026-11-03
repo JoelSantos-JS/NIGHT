@@ -40,9 +40,11 @@ export class FakeLlm implements LocalLlm {
 /** Pesquisador falso: devolve a resposta, ou lança o erro, e guarda as perguntas. */
 export class FakeResearcher {
   questions: string[] = [];
+  contexts: (string | undefined)[] = [];
   constructor(readonly id: string, private readonly behavior: string | Error) {}
-  async ask(question: string): Promise<{ answer: string; ms: number }> {
+  async ask(question: string, _language?: string, context?: string): Promise<{ answer: string; ms: number }> {
     this.questions.push(question);
+    this.contexts.push(context);
     if (this.behavior instanceof Error) throw this.behavior;
     return { answer: this.behavior, ms: 1234 };
   }

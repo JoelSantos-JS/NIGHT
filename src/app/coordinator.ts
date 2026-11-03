@@ -12,6 +12,7 @@ import type { ConversationTurn, Language, Project, Task } from '../core/types.ts
 import { FINAL_TASK_STATUSES } from '../core/types.ts';
 import type { ResearchAgent } from '../agents/research.ts';
 import { QuotaError } from '../agents/research.ts';
+import { buildSharedContext } from '../agents/shared-context.ts';
 import { detectLanguage } from '../router/router.ts';
 
 export interface Reply {
@@ -75,6 +76,7 @@ export class NightCoordinator {
 
   async handle(text: string, languageOverride?: Language): Promise<Reply> {
     const language = languageOverride ?? detectLanguage(text);
+    await this.restoreHistory();
 
     if (this.pendingIdea) {
       const { projectId } = this.pendingIdea;
@@ -89,7 +91,6 @@ export class NightCoordinator {
       const followUp = this.research(intent.query, language, decision.reason);
       return { ...this.finish(text, language, say(language, 'Vou pesquisar isso, já te falo.', "I'll look that up, back in a moment."), 'research', 'rules'), followUp };
     }
-    await this.memory.logRoute({ text, language, decision });
     let out: string;
     switch (intent.kind) {
       case 'chat': out = await this.chat(text, language); break;
@@ -101,7 +102,22 @@ export class NightCoordinator {
       case 'approval': out = await this.approval(intent, language); break;
       case 'stop-speaking': out = ''; break;
     }
+    // Grava depois de agir, com a resposta: é isso que os outros agentes vão ver no contexto.
+    await this.memory.logRoute({ text, language, decision, reply: out });
     return this.finish(text, language, out, intent.kind, decision.model);
+  }
+
+  private restored = false;
+
+  /** Depois de reiniciar, a conversa recente vem do banco: o Night não "esquece" o que ele e os outros disseram. */
+  private async restoreHistory(): Promise<void> {
+    if (this.restored) return;
+    this.restored = true;
+    const past = await this.memory.recentActivity(HISTORY_TURNS);
+    this.history = past.flatMap((a): ConversationTurn[] => [
+      { role: 'owner', text: a.text, at: a.at },
+      ...(a.reply ? [{ role: 'night' as const, text: a.reply, at: a.at }] : []),
+    ]).slice(-HISTORY_TURNS * 2);
   }
 
   /** Resposta que chega depois: a pergunta já está no histórico, só entra a fala do Night. */
@@ -140,12 +156,15 @@ export class NightCoordinator {
     const spoken: string[] = []; // curto: vai para a voz
     for (const agent of this.researchers) {
       try {
-        const { answer, ms } = await agent.ask(query, language);
+        // Cada agente recebe o contexto compartilhado: quem ele é, os outros, a conversa e as tarefas.
+        const context = await buildSharedContext(this.memory, agent.id, language);
+        const { answer, ms } = await agent.ask(query, language, context);
+        const spokenAnswer = forSpeech(answer);
         await this.memory.logRoute({
-          text: query, language,
+          text: query, language, reply: spokenAnswer,
           decision: { intent: { kind: 'research', query }, model: agent.id, reason: `${routeReason}; respondeu em ${(ms / 1000).toFixed(0)} s`, usedPremiumQuota: true },
         });
-        return this.lateReply(language, forSpeech(answer), 'research', agent.id);
+        return this.lateReply(language, spokenAnswer, 'research', agent.id);
       } catch (err) {
         const quota = err instanceof QuotaError;
         failures.push(`${agent.id}: ${quota ? 'no limite de uso' : (err as Error).message.slice(0, 200)}`);
