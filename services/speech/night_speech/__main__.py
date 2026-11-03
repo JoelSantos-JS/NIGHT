@@ -37,8 +37,8 @@ SAMPLE_RATE_IN = 16_000
 SAMPLE_RATE_OUT = 24_000
 MAX_LISTEN_S = 60  # o microfone nunca fica aberto mais que isso (blueprint §6)
 VOICES = {
-    "pt-BR": os.environ.get("NIGHT_VOICE_PT", "pf_dora"),
-    "en": os.environ.get("NIGHT_VOICE_EN", "af_heart"),
+    "pt-BR": os.environ.get("NIGHT_VOICE_PT", "pm_santa"),
+    "en": os.environ.get("NIGHT_VOICE_EN", "am_puck"),
 }
 KOKORO_LANG = {"pt-BR": "p", "en": "a"}
 WHISPER_MODEL = os.environ.get("NIGHT_WHISPER_MODEL", "small")
