@@ -94,6 +94,9 @@ export interface Memory {
   decideApproval(id: Id, decision: 'approved' | 'rejected'): Promise<Approval>;
   listPendingApprovals(): Promise<Approval[]>;
 
+  /** Grava a decisão do roteador (modelo, motivo, cota premium). */
+  logRoute(entry: { text: string; language: Language; decision: RouteDecision; taskId?: Id | null }): Promise<void>;
+
   close(): Promise<void>;
 }
 

@@ -22,7 +22,7 @@
 ## 2. Decisões de stack (propostas)
 
 1. **Coordenador em TypeScript/Node** (`src/`, um pacote só): roteador, fila, memória, adaptadores Claude/Codex, worktrees e aprovações. Chamar as CLIs como processos é simples em Node.
-2. **Voz num processo Python separado** (`services/speech`), falando com o Node por JSON em stdin/stdout (ou WebSocket local). Motivo: Nemotron (NeMo/ONNX), Kokoro (pacote `kokoro` + G2P) e whisper.cpp têm os melhores caminhos em Python. Ambiente com `uv`, cache no D:.
+2. **Voz num processo Python separado** (`services/speech`), falando com o Node por JSON em stdin/stdout (ou WebSocket local). Confirmado para o TTS em 03/11: o Kokoro só fala PT-BR pelo pacote Python (D-004). Ambiente com `uv`, cache no D:.
 3. **PostgreSQL 18** local (porta 5433), driver `pg`, migrações em SQL puro (D-002).
 4. **Ordem do STT:** começar com **whisper.cpp Small** (funciona com certeza) e testar o **Nemotron multilingual** em paralelo, pelos critérios da seção 17 do blueprint. O Nemotron só vira padrão depois de passar nesses critérios.
 5. **Sem MCP/ACP no MVP.** Os adaptadores chamam `claude -p` e `codex exec` em modo não interativo, dentro da worktree da tarefa.
@@ -35,8 +35,8 @@
 |---|---|---|---|
 | M0 | Preparação | `git init`, pastas, `docs/DECISIONS.md`, Ollama + Qwen3 1.7B no D:, variáveis de cache no D: | Joel instala; Claude registra |
 | M1 | Contratos | Interfaces TS e esquema do Postgres fechados (ver §4), revisados pelo Codex | Claude escreve, Codex revisa |
-| M2 | Conversa por texto | Terminal → roteador → Qwen local → resposta, sem rede (provado por log) | Claude |
-| M3 | Memória | “Salva essa ideia para o Abstrike” grava no Postgres; “quais ideias do Abstrike?” recupera; testes passam | Claude |
+| M2 | Conversa por texto | Terminal → roteador → Qwen local → resposta, sem rede (provado por log) | Claude · ✅ 03/11 (`pnpm night`) |
+| M3 | Memória | “Salva essa ideia para o Abstrike” grava no Postgres; “quais ideias do Abstrike?” recupera; testes passam | Claude · ✅ 03/11 |
 | M4 | Worktree + tarefa (sem IA) | `WorktreeManager` cria `agent/<agente>/<id>` a partir de um commit base, mostra diff, rejeita (apaga só a worktree do agente) e aprova (merge só se não houver conflito). Testes provam que a worktree do Joel não muda | Codex |
 | M5 | Adaptadores Claude/Codex | Uma tarefa real roda numa worktree, grava eventos, o cancelamento mata o processo e o status vem do banco | Codex |
 | M6 | Voz | Push-to-talk → STT → Qwen → Kokoro, em EN e PT-BR; banco de testes com 10+10 frases do Joel | Claude |

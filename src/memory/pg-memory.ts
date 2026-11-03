@@ -6,9 +6,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import type { Memory, NewIdea } from '../core/interfaces.ts';
+import type { Memory, NewIdea, RouteDecision } from '../core/interfaces.ts';
 import type {
-  Approval, ApprovalAction, Id, Idea, IdeaStatus, Project, Task, TaskEvent, TaskEventType, TaskStatus,
+  Approval, ApprovalAction, Id, Idea, IdeaStatus, Language, Project, Task, TaskEvent, TaskEventType, TaskStatus,
 } from '../core/types.ts';
 import { FINAL_TASK_STATUSES } from '../core/types.ts';
 
@@ -292,6 +292,15 @@ export class PgMemory implements Memory {
   async listPendingApprovals(): Promise<Approval[]> {
     const { rows } = await this.pool.query(`SELECT * FROM approvals WHERE decision = 'pending' ORDER BY requested_at`);
     return rows.map(toApproval);
+  }
+
+  async logRoute(e: { text: string; language: Language; decision: RouteDecision; taskId?: Id | null }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO route_log (id, language, text, intent, model, reason, used_premium, task_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [randomUUID(), e.language, e.text, e.decision.intent.kind, e.decision.model, e.decision.reason,
+        e.decision.usedPremiumQuota, e.taskId ?? null],
+    );
   }
 
   async close(): Promise<void> {

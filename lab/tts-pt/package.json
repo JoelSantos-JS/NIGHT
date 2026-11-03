@@ -1,0 +1,11 @@
+{
+  "name": "night-lab-tts-pt",
+  "private": true,
+  "type": "module",
+  "description": "Teste: Kokoro em PT-BR. Separado do app para não pôr dependência de teste no Night.",
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
+    "kokoro-js": "^1.2.1",
+    "phonemizer": "^1.2.1"
+  }
+}

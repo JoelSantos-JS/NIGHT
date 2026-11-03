@@ -8,8 +8,10 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "test": "node --import tsx --test --test-concurrency=1 \"tests/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "night": "node --disable-warning=ExperimentalWarning --import tsx src/app/cli.ts",
+    "seed": "node --import tsx scripts/seed-projects.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

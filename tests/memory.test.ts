@@ -1,23 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
-import pg from 'pg';
 import { PgMemory } from '../src/memory/pg-memory.ts';
 import type { Project } from '../src/core/types.ts';
-
-const TEST_URL = process.env.NIGHT_TEST_DATABASE_URL ?? 'postgres://night@localhost:5433/night_test';
-
-/** Zera o schema do banco de teste. Recusa qualquer banco que não termine em _test. */
-async function resetTestDb(url: string): Promise<void> {
-  const db = new URL(url).pathname.slice(1);
-  if (!db.endsWith('_test')) throw new Error(`recusando zerar "${db}": não é banco de teste`);
-  const client = new pg.Client({ connectionString: url });
-  await client.connect();
-  try {
-    await client.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
-  } finally {
-    await client.end();
-  }
-}
+import { resetTestDb, TEST_URL, truncateAll } from './helpers.ts';
 
 const abstrike: Project = {
   id: 'abstrike', name: 'Abstrike', description: 'arbitragem cripto', repoPath: null,
@@ -33,10 +18,7 @@ describe('PgMemory', () => {
   });
   after(async () => { await mem?.close(); });
   beforeEach(async () => {
-    const c = new pg.Client({ connectionString: TEST_URL });
-    await c.connect();
-    await c.query('TRUNCATE approvals, task_events, tasks, ideas, projects');
-    await c.end();
+    await truncateAll();
     await mem.upsertProject(abstrike);
   });
 
