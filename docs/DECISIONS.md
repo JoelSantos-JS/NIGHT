@@ -53,3 +53,13 @@ meio debochado" só na conversa; confirmações de ação (salvei, cancelei, reg
 e sem piada quando o assunto é erro, dinheiro ou segurança. A resposta passa por `forSpeech` (tira emoji e
 markdown, que o 1.7B põe mesmo proibido). O humor do 1.7B é fraco e ele às vezes inventa fatos; o qwen3:4b
 não coube em 03/11 (faltou memória na GPU e na RAM com os outros programas abertos). Temperatura em 0.4.
+
+## D-008 — Qwen no processador, Whisper small com queda para base (03/11/2026)
+Com o projeto pesado do Joel fechado (memória livre de 2 para 14,7 GB), medido no Ryzen 5 5500:
+- qwen3:1.7b: 22 tok/s no processador × 9,7 tok/s na RX 550 (Vulkan). Padrão agora é `num_gpu: 0`;
+  `NIGHT_LLM_GPU=1` volta para a placa (gasta menos RAM, mais lento).
+- qwen3:4b: dividido entre GPU e CPU estourou 120 s por resposta; só no processador, 8,8 tok/s e 86 s numa
+  resposta curta, e ignorou `think: false`. Descartado e apagado.
+- Whisper small × base em 3 frases PT: small acerta mais ("karaoke", "O Claude", "pro") e gasta 4,5 s por frase
+  contra 1,8 s. Padrão `small`; se não couber na memória, o serviço cai sozinho para `base`.
+O 1.7B continua inventando fato quando pedem curiosidade ("Linux num PDP-11 em 1964", duas vezes).

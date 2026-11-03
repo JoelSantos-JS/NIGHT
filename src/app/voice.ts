@@ -15,7 +15,7 @@ const RESET = '\u001b[0m';
 const { memory, llm, llmOk, night } = await createNight();
 if (!llmOk) console.error(`${RED}Aviso: o Ollama não respondeu ou não tem o ${llm.model}. A conversa vai falhar até ele subir.${RESET}`);
 
-const speech = new SpeechService(process.env.NIGHT_WHISPER_MODEL ? {} : { NIGHT_WHISPER_MODEL: 'base' });
+const speech = new SpeechService();
 console.log('Carregando a voz (Kokoro + Whisper), leva uns 30 s na primeira vez...');
 const ready = await speech.start();
 console.log(`${DIM}voz pronta em ${(ready.loadMs / 1000).toFixed(0)} s · whisper ${ready.whisper} · mic: ${ready.input} · saída: ${ready.output}${RESET}`);

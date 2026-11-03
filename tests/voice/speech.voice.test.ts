@@ -17,7 +17,7 @@ function recall(expected: string, got: string): number {
 }
 
 describe('serviço de voz (ida e volta)', { timeout: 300_000 }, () => {
-  const speech = new SpeechService({ NIGHT_WHISPER_MODEL: process.env.NIGHT_WHISPER_MODEL ?? 'base' });
+  const speech = new SpeechService();
   const dir = mkdtempSync(path.join(tmpdir(), 'night-voz-'));
   before(async () => { await speech.start(); });
   after(async () => { await speech.close(); rmSync(dir, { recursive: true, force: true }); });

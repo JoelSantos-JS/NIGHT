@@ -42,6 +42,7 @@ VOICES = {
 }
 KOKORO_LANG = {"pt-BR": "p", "en": "a"}
 WHISPER_MODEL = os.environ.get("NIGHT_WHISPER_MODEL", "small")
+WHISPER_FALLBACK = "base"  # se o small não couber na memória (PC com outros programas pesados abertos)
 THREADS = max(1, (os.cpu_count() or 2) // 2)
 
 _out_lock = threading.Lock()
@@ -101,7 +102,15 @@ class Listener:
     def __init__(self) -> None:
         from faster_whisper import WhisperModel
 
-        self.model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", cpu_threads=THREADS)
+        self.model_name = WHISPER_MODEL
+        try:
+            self.model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", cpu_threads=THREADS)
+        except (RuntimeError, MemoryError) as e:
+            if WHISPER_MODEL == WHISPER_FALLBACK:
+                raise
+            log(f"whisper {WHISPER_MODEL} não coube ({e}); usando {WHISPER_FALLBACK}")
+            self.model_name = WHISPER_FALLBACK
+            self.model = WhisperModel(WHISPER_FALLBACK, device="cpu", compute_type="int8", cpu_threads=THREADS)
         self.stream: sd.InputStream | None = None
         self.chunks: list[np.ndarray] = []
         self.opened_at = 0.0
@@ -166,7 +175,7 @@ def main() -> None:
     speaker = Speaker()
     listener = Listener()
     send({"type": "ready", "load_ms": round((time.perf_counter() - t) * 1000), "voices": VOICES,
-          "whisper": WHISPER_MODEL, "input": sd.query_devices(kind="input")["name"],
+          "whisper": listener.model_name, "input": sd.query_devices(kind="input")["name"],
           "output": sd.query_devices(kind="output")["name"]})
 
     # Fala numa thread própria: "stop" e "listen_start" precisam funcionar enquanto ela fala.
