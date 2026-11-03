@@ -78,7 +78,13 @@ export function ideaBody(original: string, projectName: string | null): string {
 }
 
 /** Só as regras, sem modelo. null = nenhuma regra reconheceu. */
-export function ruleIntent(text: string, projectNames: string[]): Intent | null {
+/** "Night, salva..." / "Hey Night, ..." → "salva...". Chamar o Night pelo nome não é falar do projeto Night. */
+export function stripWakeWord(text: string): string {
+  return text.replace(/^\s*((hey|hi|oi|ola|olá|ok|e a[ií])[\s,]+)?night\b[\s,.!:;-]*/i, '').trim() || text.trim();
+}
+
+export function ruleIntent(rawText: string, projectNames: string[]): Intent | null {
+  const text = stripWakeWord(rawText);
   const n = normalize(text);
   if (!n) return null;
   const project = projectIn(n, projectNames);
@@ -114,7 +120,8 @@ export class NightRouter implements ModelRouter {
     private readonly projectNames: () => Promise<string[]>,
   ) {}
 
-  async route(text: string, _language: Language): Promise<RouteDecision> {
+  async route(rawText: string, _language: Language): Promise<RouteDecision> {
+    const text = stripWakeWord(rawText);
     const names = await this.projectNames();
     const byRule = ruleIntent(text, names);
     // Pesquisa: a regra só reconhece; quem gasta cota e grava o modelo de verdade é o coordenador.

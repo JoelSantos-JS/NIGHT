@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { detectLanguage, ideaBody, NightRouter, ruleIntent } from '../src/router/router.ts';
+import { detectLanguage, ideaBody, NightRouter, ruleIntent, stripWakeWord } from '../src/router/router.ts';
 import { FakeLlm } from './helpers.ts';
 
 const PROJECTS = ['Abstrike', 'Soaken', 'Night'];
@@ -59,6 +59,14 @@ describe('regras do roteador', () => {
     assert.equal(ideaBody('save this idea for Abstrike: exchange delay alerts', 'Abstrike'), 'exchange delay alerts');
     assert.equal(ideaBody('salva uma ideia para o projeto Soaken', 'Soaken'), '');
     assert.equal(ideaBody('salva essa ideia que dá pra vender curso de coreano', null), 'dá pra vender curso de coreano');
+  });
+
+  test('chamar o Night pelo nome não atrapalha a regra nem vira projeto', () => {
+    assert.equal(kind('Night, pesquisa o que mudou nessa versão'), 'research');
+    assert.equal(kind('Hey Night, what is running?'), 'status');
+    assert.deepEqual(ruleIntent('Night, salva essa ideia: modo karaokê', PROJECTS), { kind: 'save-idea', projectHint: null, text: 'modo karaokê' });
+    assert.equal(stripWakeWord('Night'), 'Night', 'só o nome fica como está');
+    assert.equal(stripWakeWord('o projeto Night tá parado'), 'o projeto Night tá parado');
   });
 
   test('"cancela" dentro de uma ideia não cancela nada', () => {
