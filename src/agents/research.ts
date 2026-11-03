@@ -51,6 +51,18 @@ function run(cmd: string, args: string[], cwd: string, timeoutMs: number): Promi
   });
 }
 
+/**
+ * Claude Code: CLAUDE_BIN, senão o instalado pelo npm, senão "claude.exe" do PATH.
+ * O npm vem antes porque no PC do Joel o PATH tem um claude.exe antigo (2.1.50, em ~/.local/bin)
+ * na frente do atual (2.1.273, do npm) — e o antigo se recusa a rodar dentro de outra sessão.
+ */
+export function findClaudeBin(): string {
+  if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
+  const npm = path.join(process.env.APPDATA ?? '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+  if (process.platform === 'win32' && existsSync(npm)) return npm;
+  return process.platform === 'win32' ? 'claude.exe' : 'claude';
+}
+
 /** Codex da extensão do VS Code mais nova, ou CODEX_BIN. */
 export function findCodexBin(): string | null {
   if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
@@ -104,7 +116,7 @@ export class ClaudeResearch implements ResearchAgent {
   readonly id: string;
   constructor(
     private readonly model = process.env.NIGHT_RESEARCH_CLAUDE_MODEL ?? 'haiku',
-    private readonly bin = process.env.CLAUDE_BIN ?? 'claude',
+    private readonly bin = findClaudeBin(),
     private readonly timeoutMs = 180_000,
   ) {
     this.id = `claude:${model}`;
@@ -114,7 +126,7 @@ export class ClaudeResearch implements ResearchAgent {
     const dir = mkdtempSync(path.join(tmpdir(), 'night-research-'));
     const t = performance.now();
     try {
-      const r = await run(process.platform === 'win32' && this.bin === 'claude' ? 'claude.exe' : this.bin, [
+      const r = await run(this.bin, [
         '-p', researchPrompt(question, language),
         '--model', this.model,
         '--allowedTools', 'WebSearch', 'WebFetch',
