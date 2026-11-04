@@ -31,7 +31,7 @@ describe('agentes sabem uns dos outros', () => {
 
     const ctx = claude.contexts[0]!;
     assert.match(ctx, /Você é claude:haiku, um dos agentes do Night\./);
-    assert.match(ctx, /o Codex \(gpt-6-luna para pesquisa/);
+    assert.match(ctx, /pesquisa com o Codex gpt-6-luna/);
     assert.match(ctx, /Joel: Pesquisa pra mim a versão mais nova do Ollama → codex:gpt-6-luna: O Ollama 0\.40\.14 saiu hoje/);
     assert.match(ctx, /Tarefas abertas:\n- \w+ \(claude, captured\): pede pro claude corrigir o bug do login no Soaken/);
   });

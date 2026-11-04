@@ -11,10 +11,12 @@ export const MAX_CONTEXT_CHARS = 2500;
 const ACTIVITY_ITEMS = 8;
 const REPLY_CHARS = 220;
 
-const AGENTS_PT = `Agentes do Night: o Night (qwen3:1.7b local, conversa do dia a dia), o Codex (gpt-6-luna para pesquisa,
-gpt-6-astra para código) e o Claude (haiku para pesquisa, modelo maior para código). O dono é o Joel.`;
-const AGENTS_EN = `Night's agents: Night (local qwen3:1.7b, everyday chat), Codex (gpt-6-luna for research, gpt-6-astra
-for code) and Claude (haiku for research, a larger model for code). The owner is Joel.`;
+const AGENTS_PT = `Agentes do Night: conversa normal com o Codex gpt-6-luna e o Claude sonnet, alternando a cada mensagem
+(um por vez); pesquisa com o Codex gpt-6-luna (reserva: Claude haiku); código com o Codex gpt-6-astra ou o Claude, um faz
+e o outro revisa; o qwen3:1.7b local é só reserva sem internet. O dono é o Joel.`;
+const AGENTS_EN = `Night's agents: everyday chat with Codex gpt-6-luna and Claude sonnet, alternating each message (one at a
+time); research with Codex gpt-6-luna (fallback: Claude haiku); code with Codex gpt-6-astra or Claude, one writes and the
+other reviews; local qwen3:1.7b is only an offline fallback. The owner is Joel.`;
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 const hhmm = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Bahia' });
