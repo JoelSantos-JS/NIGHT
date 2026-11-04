@@ -13,6 +13,7 @@ import { FINAL_TASK_STATUSES } from '../core/types.ts';
 import type { ResearchAgent } from '../agents/research.ts';
 import { QuotaError } from '../agents/research.ts';
 import { buildSharedContext } from '../agents/shared-context.ts';
+import type { ChatAgent } from '../agents/chat.ts';
 import { diffStat, otherAgent, type TaskScheduler } from '../agents/scheduler.ts';
 import { detectLanguage, ruleIntent } from '../router/router.ts';
 
@@ -97,6 +98,8 @@ export class NightCoordinator {
     private readonly researchers: ResearchAgent[] = [],
     /** Executor das tarefas de código; sem ele, pedido de código só fica registrado. */
     private readonly tasks?: TaskScheduler,
+    /** Conversa normal (alternando); vazio = só o Qwen local. */
+    private readonly chatters: ChatAgent[] = [],
   ) {}
 
   async handle(text: string, languageOverride?: Language): Promise<Reply> {
@@ -125,8 +128,14 @@ export class NightCoordinator {
     }
     let out: string;
     let detail: string | undefined;
+    let logged = decision;
     switch (intent.kind) {
-      case 'chat': out = await this.chat(text, language); break;
+      case 'chat': {
+        const r = await this.converse(text, language);
+        out = r.text;
+        logged = { ...decision, model: r.model, reason: r.reason, usedPremiumQuota: r.premium };
+        break;
+      }
       case 'save-idea': out = await this.handleSaveIdea(intent, language); break;
       case 'find-ideas': out = await this.findIdeas(intent, language); break;
       case 'status': out = await this.status(language); break;
@@ -138,8 +147,34 @@ export class NightCoordinator {
       case 'stop-speaking': out = ''; break;
     }
     // Grava depois de agir, com a resposta: é isso que os outros agentes vão ver no contexto.
-    await this.memory.logRoute({ text, language, decision, reply: out });
-    return { ...this.finish(text, language, out, intent.kind, decision.model), ...(detail ? { detail } : {}) };
+    await this.memory.logRoute({ text, language, decision: logged, reply: out });
+    return { ...this.finish(text, language, out, intent.kind, logged.model), ...(detail ? { detail } : {}) };
+  }
+
+  private chatTurn = 0;
+
+  /**
+   * Conversa: Codex gpt-6-luna e Claude Sonnet ALTERNANDO a cada mensagem (pedido do Joel, 04/11), o outro se
+   * o da vez falhar, e o Qwen local só se os dois falharem (sem internet, limite de uso...).
+   */
+  private async converse(text: string, language: Language): Promise<{ text: string; model: string; reason: string; premium: boolean }> {
+    const n = this.chatters.length;
+    const failures: string[] = [];
+    if (n > 0) {
+      const start = this.chatTurn++ % n;
+      const context = await buildSharedContext(this.memory, 'conversa', language);
+      const history = this.history.slice(-10).map((t) => ({ role: t.role, text: t.text }));
+      for (let i = 0; i < n; i++) {
+        const agent = this.chatters[(start + i) % n]!;
+        try {
+          const reply = forSpeech(await agent.reply(history, withoutVocative(text), language, context));
+          if (reply) return { text: reply, model: agent.id, reason: i === 0 ? 'conversa (vez dele)' : `conversa (reserva: ${failures.join('; ')})`, premium: true };
+        } catch (err) {
+          failures.push(`${agent.id}: ${err instanceof QuotaError ? 'no limite' : (err as Error).message.slice(0, 100)}`);
+        }
+      }
+    }
+    return { text: await this.chat(text, language), model: this.llm.model, reason: failures.length ? `conversa local (falharam: ${failures.join('; ')})` : 'conversa local', premium: false };
   }
 
   private restored = false;
@@ -154,7 +189,7 @@ export class NightCoordinator {
     // As respostas antigas do próprio Qwen não voltam: o 1.7B copia a si mesmo e entra em loop ("Vou ver o
     // que é real" em toda resposta, uso real 04/11). O que os outros agentes e as regras disseram volta.
     // A troca inteira sai (pergunta e resposta): só a pergunta sozinha fazia ele responder a pergunta velha.
-    this.history = past.filter((a) => a.intent !== 'chat').flatMap((a): ConversationTurn[] => [
+    this.history = past.filter((a) => a.intent !== 'chat' || !a.model.startsWith('qwen')).flatMap((a): ConversationTurn[] => [
       { role: 'owner', text: a.text, at: a.at },
       ...(a.reply ? [{ role: 'night' as const, text: a.reply, at: a.at }] : []),
     ]).slice(-HISTORY_TURNS * 2);

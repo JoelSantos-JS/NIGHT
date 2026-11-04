@@ -38,7 +38,7 @@ SAMPLE_RATE_OUT = 24_000
 MAX_LISTEN_S = 60  # o microfone nunca fica aberto mais que isso (blueprint §6)
 VOICES = {
     "pt-BR": os.environ.get("NIGHT_VOICE_PT", "pm_santa"),
-    "en": os.environ.get("NIGHT_VOICE_EN", "am_puck"),
+    "en": os.environ.get("NIGHT_VOICE_EN", "pm_santa"),
 }
 KOKORO_LANG = {"pt-BR": "p", "en": "a"}
 WHISPER_MODEL = os.environ.get("NIGHT_WHISPER_MODEL", "small")
@@ -46,9 +46,12 @@ WHISPER_PROMPT_PT = ("Night, pesquisa pra mim, pesquisar, pesquisando, Claude, C
                      "salva essa ideia, aprovo, descarta, cancela, mostra as mudanças.")
 WHISPER_PROMPT_EN = "Night, search, research, look up, Claude, Codex, task, idea, approve, discard, cancel, show the changes."
 WHISPER_FALLBACK = "base"
-# Abaixo disso a transcrição é descartada (ajustável). Fala clara costuma ficar entre -0,1 e -0,5.
-MIN_AVG_LOGPROB = float(os.environ.get("NIGHT_STT_MIN_LOGPROB", "-0.8"))
-MAX_NO_SPEECH = float(os.environ.get("NIGHT_STT_MAX_NO_SPEECH", "0.6"))  # se o small não couber na memória (PC com outros programas pesados abertos)
+# Confiança mínima do Whisper. Fala lida e clara fica entre -0,1 e -0,5; fala longa e espontânea do Joel cai mais
+# (04/11: uma fala de 16 s transcrita certinha foi descartada com o limite único de -0,8). Frase curta é onde ele
+# inventa ("So watch the events"), então lá o limite é rígido; fala longa ganha folga.
+MIN_AVG_LOGPROB = float(os.environ.get("NIGHT_STT_MIN_LOGPROB", "-0.8"))        # fala com menos de 4 s
+MIN_AVG_LOGPROB_LONG = float(os.environ.get("NIGHT_STT_MIN_LOGPROB_LONG", "-1.4"))  # fala de 4 s ou mais
+MAX_NO_SPEECH = float(os.environ.get("NIGHT_STT_MAX_NO_SPEECH", "0.6"))
 THREADS = max(1, (os.cpu_count() or 2) // 2)
 
 _out_lock = threading.Lock()
@@ -188,7 +191,9 @@ class Listener:
             no_speech = max(s.no_speech_prob for s in segs)
         else:
             avg_logprob, no_speech = -9.0, 1.0
-        unsure = avg_logprob < MIN_AVG_LOGPROB or no_speech > MAX_NO_SPEECH
+        min_logprob = MIN_AVG_LOGPROB if audio_s < 4.0 else MIN_AVG_LOGPROB_LONG
+        # "Não é fala" só conta junto com confiança baixa: em fala longa o no_speech de um trecho pode subir à toa.
+        unsure = avg_logprob < min_logprob or (no_speech > MAX_NO_SPEECH and avg_logprob < -0.5)
         return {"text": "" if unsure else text, "doubt": text if unsure else None,
                 "confidence": round(avg_logprob, 2), "no_speech": round(no_speech, 2),
                 "language": "en" if language == "en" else "pt-BR", "audio_s": round(audio_s, 2),

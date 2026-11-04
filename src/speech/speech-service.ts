@@ -173,5 +173,6 @@ function toTranscript(m: Msg): Transcript {
     audioSeconds: Number(m.audio_s ?? 0),
     ms: Number(m.ms ?? 0),
     doubt: typeof m.doubt === 'string' ? m.doubt : null,
+    ...(typeof m.confidence === 'number' ? { confidence: m.confidence } : {}),
   };
 }

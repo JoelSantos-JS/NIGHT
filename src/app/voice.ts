@@ -87,7 +87,7 @@ function onUtterance(heard: Transcript) {
   const n = normalize(text);
   if (!text && heard.doubt) {
     // O Whisper não teve confiança: melhor não responder do que responder a uma frase inventada.
-    console.log(`${DIM}(não entendi direito: "${heard.doubt}" — fala de novo, mais perto do microfone)${RESET}`);
+    console.log(`${DIM}(não entendi direito, confiança ${heard.confidence ?? '?'}: "${heard.doubt}" — fala de novo, mais perto do microfone)${RESET}`);
     return;
   }
   if (!text || HALLUCINATIONS.some((re) => re.test(n))) {
@@ -98,7 +98,7 @@ function onUtterance(heard: Transcript) {
     console.log(`${DIM}(ignorado, era a minha própria voz: "${text}")${RESET}`);
     return;
   }
-  console.log(`\nvocê › ${text}  ${DIM}[${heard.language} · ${heard.audioSeconds.toFixed(1)} s · transcrito em ${(heard.ms / 1000).toFixed(1)} s]${RESET}`);
+  console.log(`\nvocê › ${text}  ${DIM}[${heard.language} · ${heard.audioSeconds.toFixed(1)} s · transcrito em ${(heard.ms / 1000).toFixed(1)} s · confiança ${heard.confidence ?? '?'}]${RESET}`);
   enqueue(() => respond(text, heard.language));
 }
 

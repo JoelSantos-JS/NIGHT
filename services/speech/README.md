@@ -1,6 +1,6 @@
 # Voz do Night (Python)
 
-Kokoro para falar (PT-BR `pm_santa`, EN `am_puck`: masculinas e um pouco engraçadas, escolha do Joel) e faster-whisper para ouvir, tudo local.
+Kokoro para falar (`pm_santa` nos dois idiomas, escolha do Joel) e faster-whisper para ouvir, tudo local.
 O Node abre este processo uma vez (`src/speech/speech-service.ts`) e conversa por JSON em stdin/stdout;
 o protocolo está no topo de `night_speech/__main__.py`.
 
@@ -19,7 +19,7 @@ small ~480 MB). Depois disso, `NIGHT_SPEECH_OFFLINE=1` impede qualquer acesso à
 |---|---|---|
 | `NIGHT_WHISPER_MODEL` | `small` | erra menos em PT que o `base`, mas é ~2,5× mais lento (4,5 s × 1,8 s por frase); se não couber na memória, cai sozinho para `base` |
 | `NIGHT_VOICE_PT` | `pm_santa` | ou `pm_alex` (masculina neutra), `pf_dora` (feminina) |
-| `NIGHT_VOICE_EN` | `am_puck` | ou `am_fenrir`, `am_michael`, `af_heart`... |
+| `NIGHT_VOICE_EN` | `pm_santa` | a mesma voz do português (escolha do Joel); ou `am_puck`, `am_fenrir`, `af_heart`... |
 | `NIGHT_SPEECH_OFFLINE` | — | `1` = não consulta a internet |
 
 ## Testar

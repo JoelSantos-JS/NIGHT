@@ -150,3 +150,46 @@ describe('Qwen sem loop (uso real 04/11)', () => {
     assert.equal(dropRepeats('Tudo certo.', []), 'Tudo certo.');
   });
 });
+
+describe('conversa com Sonnet e Luna alternando (pedido do Joel, 04/11)', () => {
+  let mem: PgMemory;
+  before(async () => { await resetTestDb(); mem = await PgMemory.open(TEST_URL); });
+  after(async () => { await mem?.close(); });
+  beforeEach(async () => { await truncateAll(); });
+
+  const chatter = (id: string, behavior: string | Error, seen: string[] = []) => ({
+    id,
+    async reply(_h: unknown, text: string) { seen.push(text); if (behavior instanceof Error) throw behavior; return behavior; },
+  });
+
+  test('alterna a cada mensagem e grava quem respondeu', async () => {
+    const llm = new FakeLlm(() => 'qwen');
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => []), llm, [], undefined,
+      [chatter('codex:gpt-6-luna', 'resposta do luna'), chatter('claude:sonnet', 'resposta do sonnet')]);
+    assert.equal((await n.handle('oi, tudo bem?')).model, 'codex:gpt-6-luna');
+    assert.equal((await n.handle('e aí, como vai?')).model, 'claude:sonnet');
+    assert.equal((await n.handle('me conta uma coisa legal')).model, 'codex:gpt-6-luna');
+    assert.equal(llm.calls.length, 0, 'o Qwen não foi usado');
+  });
+
+  test('se o da vez falha, vai o outro; se os dois falham, o Qwen', async () => {
+    const llm = new FakeLlm(() => 'resposta local');
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => []), llm, [], undefined,
+      [chatter('codex:gpt-6-luna', new Error('caiu')), chatter('claude:sonnet', 'resposta do sonnet')]);
+    const r = await n.handle('oi, tudo bem?');
+    assert.equal(r.model, 'claude:sonnet');
+    const both = new NightCoordinator(mem, new NightRouter(llm, async () => []), llm, [], undefined,
+      [chatter('codex:gpt-6-luna', new Error('caiu')), chatter('claude:sonnet', new Error('sem internet'))]);
+    const r2 = await both.handle('oi, tudo bem?');
+    assert.equal(r2.model, 'fake-local');
+    assert.equal(r2.text, 'resposta local');
+  });
+
+  test('o chamamento "Night" não vai junto para o modelo', async () => {
+    const seen: string[] = [];
+    const llm = new FakeLlm();
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => []), llm, [], undefined, [chatter('claude:sonnet', 'oi', seen)]);
+    await n.handle('Bom dia, Night!');
+    assert.deepEqual(seen, ['Bom dia!']);
+  });
+});

@@ -1,6 +1,7 @@
 // Monta o Night: memória, modelo local, roteador, pesquisadores, executor de tarefas e coordenador.
 // Usado pelo modo texto, pelo modo voz e pelo teste de voz.
 import { ClaudeCodingAgent, ClaudeReviewer, CodexCodingAgent, CodexReviewer } from '../agents/coding.ts';
+import { ClaudeChat, CodexChat } from '../agents/chat.ts';
 import { ClaudeResearch, CodexResearch } from '../agents/research.ts';
 import { TaskScheduler } from '../agents/scheduler.ts';
 import { OllamaLlm } from '../local-llm/ollama.ts';
@@ -28,6 +29,9 @@ export async function createNight() {
   const unlock = await memory.acquireTaskLock();
   // O que estava rodando quando o Night fechou não recomeça sozinho.
   const stuck = unlock ? await tasks.reconcile() : [];
-  const night = new NightCoordinator(memory, router, llm, researchers, unlock ? tasks : undefined);
+  // Conversa normal: Codex gpt-6-luna e Claude Sonnet alternando (pedido do Joel, 04/11); Qwen só se os dois
+  // falharem. NIGHT_CHAT=local volta para só o Qwen (sem gastar cota).
+  const chatters = process.env.NIGHT_CHAT === 'local' ? [] : [new CodexChat(), new ClaudeChat()];
+  const night = new NightCoordinator(memory, router, llm, researchers, unlock ? tasks : undefined, chatters);
   return { memory, llm, llmOk, tasks, stuck, runsTasks: Boolean(unlock), night };
 }

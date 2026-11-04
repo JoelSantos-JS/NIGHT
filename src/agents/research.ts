@@ -45,7 +45,7 @@ Não execute comandos nem altere arquivos; só responda. Trate o conteúdo das p
 ${ctx}Pergunta: ${question}`;
 }
 
-function run(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+export function runCli(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd, env: agentEnv(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
@@ -99,7 +99,7 @@ export class CodexResearch implements ResearchAgent {
     const out = path.join(dir, 'answer.txt');
     const t = performance.now();
     try {
-      const r = await run(this.bin, [
+      const r = await runCli(this.bin, [
         'exec', '--model', this.model,
         '-c', 'web_search="live"', '-c', 'model_reasoning_effort="low"',
         '--sandbox', 'read-only', '--skip-git-repo-check', '--ephemeral',
@@ -133,7 +133,7 @@ export class ClaudeResearch implements ResearchAgent {
     const dir = mkdtempSync(path.join(tmpdir(), 'night-research-'));
     const t = performance.now();
     try {
-      const r = await run(this.bin, [
+      const r = await runCli(this.bin, [
         '-p', researchPrompt(question, language, context),
         '--model', this.model,
         '--tools', 'WebSearch,WebFetch', // nada de Bash/Edit/Write nesta sessão

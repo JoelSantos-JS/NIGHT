@@ -116,3 +116,14 @@ Regras que ficaram:
 Limite conhecido: os testes que os agentes rodam executam código da própria worktree sem sandbox do sistema
 (no Windows o Claude Code não tem sandbox de SO; o Codex roda com o dele). Mitigação: ambiente sem segredos e
 worktree fora do repo do dono. Isolamento de verdade (WSL2/VM) fica para depois (blueprint §18 D).
+
+## D-013 — Conversa normal com Sonnet e Luna; voz pm_santa nos dois idiomas (04/11/2026)
+Pedido do Joel depois de usar: o Qwen 1.7B "ignora ou não entende" a conversa normal. Agora a conversa vai para
+Codex `gpt-6-luna` e Claude `sonnet`, ALTERNANDO a cada mensagem (divide a cota), pelas CLIs oficiais, sem
+ferramenta nenhuma (`--tools ""` no Claude; sandbox read-only sem web no Codex), ambiente mínimo. Se o da vez
+falhar, vai o outro; se os dois falharem, o Qwen local responde. `NIGHT_CHAT=local` volta para só o Qwen.
+Isso muda D-009 (o Qwen era o padrão da conversa). Medido: 5 a 16 s por resposta (a 1ª de cada um é a mais lenta).
+O Qwen continua local no roteador (classificar frase ambígua) e como reserva offline.
+Voz: `pm_santa` também em inglês (o Joel gostou dela em português).
+Whisper: limite de confiança por duração (-0,8 abaixo de 4 s, -1,4 acima): uma fala longa de 16 s transcrita
+certinha tinha sido descartada.
