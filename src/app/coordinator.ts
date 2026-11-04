@@ -28,6 +28,7 @@ export interface Reply {
 }
 
 const HISTORY_TURNS = 6;
+const QWEN_HISTORY_TURNS = 3;
 
 const SYSTEM_PROMPT: Record<Language, string> = {
   'pt-BR': `Você é o Night, assistente pessoal do Joel, rodando no computador dele.
@@ -36,16 +37,18 @@ com uma piadinha curta ou ironia leve (no máximo uma por resposta, e só se for
 Fale sério, sem piada, quando o assunto for erro, problema, dinheiro, segurança ou algo que preocupe o Joel.
 Responda em português do Brasil, em 1 a 3 frases curtas, como fala (sem markdown, sem listas, sem emoji).
 Você NÃO tem internet nem sabe nada sobre a vida do Joel, reuniões, empresas, pessoas, preços, notícias ou o futuro.
-Se a pergunta depender disso, não chute: diga em uma frase que não sabe e que pode pesquisar com o Codex se ele
-pedir "pesquisa isso". Você não executa código nem tarefas por conta própria.`,
+Se a pergunta depender disso, não chute: diga em uma frase que não sabe e que ele pode pedir "pesquisa isso".
+Nunca diga que vai pesquisar nem que está pesquisando: quem pesquisa é outra parte do Night, não você.
+Não repita a frase do Joel. Você não executa código nem tarefas por conta própria.`,
   en: `You are Night, Joel's personal assistant, running on his computer.
 Style: good-humored, like a witty friend with a bit of sass. Answer first and correctly; if it fits, end with one
 short joke or light irony (at most one, and only if it comes naturally).
 Be serious, no jokes, when the topic is an error, a problem, money, security or something worrying Joel.
 Answer in English, in 1 to 3 short spoken sentences (no markdown, no lists, no emoji).
 You have NO internet and know nothing about Joel's life, meetings, companies, people, prices, news or the future.
-If the question depends on that, don't guess: say in one sentence you don't know and that you can look it up with
-Codex if he says "search for it". You don't run code or tasks on your own.`,
+If the question depends on that, don't guess: say in one sentence you don't know and that he can say "search for it".
+Never say you will look it up or are searching: another part of Night does that, not you.
+Don't repeat Joel's sentence back. You don't run code or tasks on your own.`,
 };
 
 // Vai no COMEÇO da fala do dono. Medido em 03/11 com qwen3:1.7b, histórico em PT e pergunta em EN:
@@ -67,6 +70,19 @@ export function forSpeech(text: string): string {
     .replace(/\s+([.,!?])/g, '$1')
     .trim();
 }
+
+/** "Bom dia, Night!" → "Bom dia!"; "Night, tudo bem?" → "tudo bem?". */
+export function withoutVocative(text: string): string {
+  return text.replace(/^\s*((hey|hi|oi|ola|olá|ok)[\s,]+)?night\b[\s,.!:;-]*/i, '').replace(/[\s,]+night\s*([.!?]*)\s*$/i, '$1').trim() || text;
+}
+
+/** Tira frases que o Night já disse nas últimas respostas: o 1.7B entra em loop repetindo a mesma frase. */
+export function dropRepeats(reply: string, previous: string[]): string {
+  const said = new Set(previous.flatMap(splitSentences).map((s) => s.toLowerCase()));
+  return splitSentences(reply).filter((s) => !said.has(s.toLowerCase())).join(' ').trim();
+}
+
+const splitSentences = (t: string) => t.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
 
 export class NightCoordinator {
   private history: ConversationTurn[] = [];
@@ -135,7 +151,10 @@ export class NightCoordinator {
     if (this.restored) return;
     this.restored = true;
     const past = await this.memory.recentActivity(HISTORY_TURNS);
-    this.history = past.flatMap((a): ConversationTurn[] => [
+    // As respostas antigas do próprio Qwen não voltam: o 1.7B copia a si mesmo e entra em loop ("Vou ver o
+    // que é real" em toda resposta, uso real 04/11). O que os outros agentes e as regras disseram volta.
+    // A troca inteira sai (pergunta e resposta): só a pergunta sozinha fazia ele responder a pergunta velha.
+    this.history = past.filter((a) => a.intent !== 'chat').flatMap((a): ConversationTurn[] => [
       { role: 'owner', text: a.text, at: a.at },
       ...(a.reply ? [{ role: 'night' as const, text: a.reply, at: a.at }] : []),
     ]).slice(-HISTORY_TURNS * 2);
@@ -156,15 +175,20 @@ export class NightCoordinator {
   }
 
   private async chat(text: string, language: Language): Promise<string> {
-    const past = this.history.map((t) => ({
-      role: t.role === 'owner' ? ('user' as const) : ('assistant' as const), content: t.text,
+    // Histórico curto para o 1.7B: com 6 trocas ele imitava respostas antigas e o formato do Codex
+    // ("WEB, 4 de novembro de 2026") e repetia frases (uso real, 04/11). Fonte/data das pesquisas saem.
+    const past = this.history.slice(-QWEN_HISTORY_TURNS * 2).map((t) => ({
+      role: t.role === 'owner' ? ('user' as const) : ('assistant' as const),
+      content: t.role === 'night' ? t.text.replace(/\s*(fonte|source|informa[cç][aã]o (do|da|consultada)|web)[:,]?[^.]*\d{4}\.?$/i, '').trim() : t.text,
     }));
     try {
-      return forSpeech(await this.llm.chat([
+      const reply = forSpeech(await this.llm.chat([
         { role: 'system', content: SYSTEM_PROMPT[language] },
         ...past,
-        { role: 'user', content: `${LANGUAGE_REMINDER[language]} ${text}` },
+        // Sem o "Night" de chamamento: senão o 1.7B responde "Bom dia, Night" achando que o Joel é o Night.
+        { role: 'user', content: `${LANGUAGE_REMINDER[language]} ${withoutVocative(text)}` },
       ]));
+      return dropRepeats(reply, this.history.filter((t) => t.role === 'night').slice(-3).map((t) => t.text)) || reply;
     } catch (err) {
       return say(language, `Não consegui falar com o modelo local: ${(err as Error).message}`,
         `I couldn't reach the local model: ${(err as Error).message}`);

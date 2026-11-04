@@ -136,3 +136,17 @@ describe('NightCoordinator', () => {
     ]);
   });
 });
+
+describe('Qwen sem loop (uso real 04/11)', () => {
+  test('tira o "Night" de chamamento', async () => {
+    const { withoutVocative } = await import('../src/app/coordinator.ts');
+    assert.equal(withoutVocative('Bom dia, Night!'), 'Bom dia!');
+    assert.equal(withoutVocative('Night, tudo bem?'), 'tudo bem?');
+    assert.equal(withoutVocative('o projeto Night tá parado'), 'o projeto Night tá parado');
+  });
+  test('corta frase que ele já disse', async () => {
+    const { dropRepeats } = await import('../src/app/coordinator.ts');
+    assert.equal(dropRepeats('Bom dia! Vou ver o que é real.', ['Estou aqui. Vou ver o que é real.']), 'Bom dia!');
+    assert.equal(dropRepeats('Tudo certo.', []), 'Tudo certo.');
+  });
+});

@@ -29,6 +29,8 @@ export interface Transcript {
   audioSeconds: number;
   /** Tempo de transcrição depois que o microfone fechou. */
   ms: number;
+  /** Quando o Whisper não teve confiança: o que ele achou que ouviu (o text fica vazio). */
+  doubt?: string | null;
 }
 
 /** Aperta-e-fala (blueprint §6): o microfone só abre entre startListening e stopListening. */

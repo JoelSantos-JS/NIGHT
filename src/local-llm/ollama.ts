@@ -33,7 +33,12 @@ export class OllamaLlm implements LocalLlm {
         // 0.4 e não mais: no 1.7B, temperatura alta inventa fatos (medido em 03/11: "Linux num PDP-11 em 1964").
         // num_gpu 0 = só processador. Medido em 03/11: 1.7B no Ryzen 5 5500 dá 22 tok/s; na RX 550 (Vulkan),
         // 9,7 tok/s. NIGHT_LLM_GPU=1 volta para a placa (usa menos RAM, mas é mais lento).
-        options: { temperature: opts.json ? 0 : 0.4, ...(process.env.NIGHT_LLM_GPU === '1' ? {} : { num_gpu: 0 }) },
+        // num_thread 4: medido em 04/11, 23,6 tok/s (igual a 6 threads) e deixa núcleos livres para o Whisper,
+        // que chegou a levar 19 s para transcrever disputando o processador com o Qwen.
+        options: {
+          temperature: opts.json ? 0 : 0.4,
+          ...(process.env.NIGHT_LLM_GPU === '1' ? {} : { num_gpu: 0, num_thread: Number(process.env.NIGHT_LLM_THREADS ?? 4) }),
+        },
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
     });

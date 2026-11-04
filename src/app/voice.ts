@@ -85,6 +85,11 @@ const enqueue = (job: () => Promise<void>) => {
 function onUtterance(heard: Transcript) {
   const text = heard.text.trim();
   const n = normalize(text);
+  if (!text && heard.doubt) {
+    // O Whisper não teve confiança: melhor não responder do que responder a uma frase inventada.
+    console.log(`${DIM}(não entendi direito: "${heard.doubt}" — fala de novo, mais perto do microfone)${RESET}`);
+    return;
+  }
   if (!text || HALLUCINATIONS.some((re) => re.test(n))) {
     console.log(`${DIM}(ignorado: "${text}")${RESET}`);
     return;

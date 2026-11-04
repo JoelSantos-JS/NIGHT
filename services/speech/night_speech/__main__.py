@@ -45,7 +45,10 @@ WHISPER_MODEL = os.environ.get("NIGHT_WHISPER_MODEL", "small")
 WHISPER_PROMPT_PT = ("Night, pesquisa pra mim, pesquisar, pesquisando, Claude, Codex, Soaken, tarefa, ideia, "
                      "salva essa ideia, aprovo, descarta, cancela, mostra as mudanças.")
 WHISPER_PROMPT_EN = "Night, search, research, look up, Claude, Codex, task, idea, approve, discard, cancel, show the changes."
-WHISPER_FALLBACK = "base"  # se o small não couber na memória (PC com outros programas pesados abertos)
+WHISPER_FALLBACK = "base"
+# Abaixo disso a transcrição é descartada (ajustável). Fala clara costuma ficar entre -0,1 e -0,5.
+MIN_AVG_LOGPROB = float(os.environ.get("NIGHT_STT_MIN_LOGPROB", "-0.8"))
+MAX_NO_SPEECH = float(os.environ.get("NIGHT_STT_MAX_NO_SPEECH", "0.6"))  # se o small não couber na memória (PC com outros programas pesados abertos)
 THREADS = max(1, (os.cpu_count() or 2) // 2)
 
 _out_lock = threading.Lock()
@@ -162,18 +165,33 @@ class Listener:
             # Só PT ou EN: entre os dois, o mais provável. Evita o Whisper "achar" galego ou espanhol.
             # Fala curta engana a detecção ("Bom dia, Night!" em 1,4 s saiu inglês, "Bon Gia night"):
             # abaixo de 2,5 s, inglês só se for o dobro mais provável. Na dúvida, português (o padrão do Joel).
+            # 04/11 no uso real: falas de 1 a 2 s saíram inglês inventado ("So watch the events", "Night was the
+            # day"). Abaixo de 3 s, inglês só com certeza alta. Na dúvida, português (o padrão do Joel).
             _, _, probs = self.model.detect_language(audio)
             p = dict(probs)
             p_en, p_pt = p.get("en", 0), p.get("pt", 0)
-            margin = 2.0 if audio_s < 2.5 else 1.0
-            language = "en" if p_en > p_pt * margin else "pt"
+            if audio_s < 3.0:
+                language = "en" if p_en >= 0.75 and p_en > p_pt * 3 else "pt"
+            else:
+                language = "en" if p_en > p_pt * 1.5 else "pt"
         # O prompt puxa o Whisper para o vocabulário dos comandos. Sem "pesquisar" aqui, ele ouvia "precisar"
         # (04/11: "você consegue pesquisar para mim?" virou "precisar" e o pedido não foi reconhecido).
         prompt = (WHISPER_PROMPT_EN if language == "en" else WHISPER_PROMPT_PT)
         segments, _ = self.model.transcribe(audio, language=language, vad_filter=True, beam_size=5,
                                             initial_prompt=prompt)
-        text = " ".join(s.text.strip() for s in segments).strip()
-        return {"text": text, "language": "en" if language == "en" else "pt-BR", "audio_s": round(audio_s, 2),
+        segs = list(segments)
+        text = " ".join(s.text.strip() for s in segs).strip()
+        # Confiança: o Whisper "chuta" frase quando não entendeu (ruído, fala baixa, microfone Bluetooth ruim).
+        # Média do log-prob baixa ou "provavelmente não é fala" → devolve vazio em vez de inventar.
+        if segs:
+            avg_logprob = sum(s.avg_logprob * (s.end - s.start) for s in segs) / max(1e-6, sum(s.end - s.start for s in segs))
+            no_speech = max(s.no_speech_prob for s in segs)
+        else:
+            avg_logprob, no_speech = -9.0, 1.0
+        unsure = avg_logprob < MIN_AVG_LOGPROB or no_speech > MAX_NO_SPEECH
+        return {"text": "" if unsure else text, "doubt": text if unsure else None,
+                "confidence": round(avg_logprob, 2), "no_speech": round(no_speech, 2),
+                "language": "en" if language == "en" else "pt-BR", "audio_s": round(audio_s, 2),
                 "ms": round((time.perf_counter() - t) * 1000)}
 
 
