@@ -44,7 +44,7 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const SAVE_IDEA = /\b(salva|salve|salvar|guarda|guarde|anota|anote|registra|registre)\b.{0,20}\bideia\b|\b(save|note|record|jot down)\b.{0,15}\bidea\b|\bnova ideia\b|\bnew idea\b/;
 const FIND_IDEAS = /\b(quais|mostra|mostre|lista|liste|lembra|busca|procura)\b.{0,25}\bideias?\b|\b(list|show|find|what|which|recall)\b.{0,20}\bideas\b|\bminhas ideias\b|\bmy ideas\b/;
-const STATUS = /\bo que (voce )?(esta|ta) (fazendo|rodando)\b|\b(o que|que) (esta|ta) rodando\b|\bwhat('?s| is| are)( you)? (running|doing|working on)\b|\bstatus\b|\bcomo (esta|ta|anda|vai) (a |o )?(tarefa|trabalho|experimento)\b|\bhow is\b.{0,40}\b(task|going)\b|\bprogress\b|\bandamento\b/;
+const STATUS = /\b(ta|esta|ainda|ja) (pesquisando|precisando)\b|\b(ja )?(achou|terminou a pesquisa)\b|\bstill (searching|looking)\b|\bo que (voce )?(esta|ta) (fazendo|rodando)\b|\b(o que|que) (esta|ta) rodando\b|\bwhat('?s| is| are)( you)? (running|doing|working on)\b|\bstatus\b|\bcomo (esta|ta|anda|vai) (a |o )?(tarefa|trabalho|experimento)\b|\bhow is\b.{0,40}\b(task|going)\b|\bprogress\b|\bandamento\b/;
 const STOP_SPEAKING = /^(para|pare|parar) de falar\b|^(stop|quit) talking\b|^silencio\b|^(shut up|be quiet|quiet)\b|^chega\b/;
 // Cancelar só como ORDEM, no começo da frase: "cancela a tarefa", "para todos os agentes", "stop the task".
 // "Como cancelar a tarefa?" é pergunta e não pode matar nada (2ª revisão do Codex, 04/11).
@@ -65,11 +65,32 @@ const DELEGATE = /\b(pede|peca|pedir|manda|mande|fala|diz)\b.{0,6}\b(pro|para o|
 // "hoje"/"agora" sozinhos não contam: "tô cansado hoje" não é pesquisa.
 const RESEARCH = new RegExp([
   /\b(pesquisa|pesquise|pesquisar|procura|procure|busca|busque|googla|googlar)\b.{0,30}\b(internet|web|google|sobre|pra mim|para mim)\b/.source,
+  // "pesquisa" em qualquer lugar, com algo depois ("você consegue pesquisar o preço…", "faz uma pesquisa sobre…")
+  /\b(pesquisa|pesquise|pesquisar|faz uma pesquisa|fazer uma pesquisa)\b\s+\S+/.source,
+  // O Whisper troca "pesquisar" por "precisar": "você consegue precisar pra mim?" não existe em português.
+  /\b(consegue|pode|poderia|da pra) (precisar|pesquisar|procurar)\b|\bprecis(ar|a) (isso )?(pra|para) mim\b/.source,
   /^(pesquisa|pesquise|search|look up|research|google)\b/.source,
   /\b(search|look up|research|google)\b.{0,20}\b(for|about|the|on)\b/.source,
   /\b(qual|quais|quanto|quanta|quem|quando|como (esta|ta)|o que)\b.{0,40}\b(cotacao|preco|noticias?|ultim[ao]s?|recentes?|atual|atualmente|lancamento|lancou|resultado|placar|previsao do tempo|dolar|bitcoin)\b/.source,
   /\b(what|who|when|how much|how is)\b.{0,40}\b(price|news|latest|recent|current|currently|released|score|weather|forecast)\b/.source,
 ].join('|'));
+
+// Pergunta sobre FATO vai para o Codex/Claude, não para o Qwen 1.7B: medido em 04/11, ele inventa mesmo instruído
+// a não inventar ("o CEO da Nvidia é Jensen Nuhra", "a reunião do GoPom vai discutir o código").
+// Conceito e explicação ("o que é uma API", "me explica", "diferença entre") continuam locais (blueprint §5).
+const FACT_QUESTION = /^(quem|quando|onde|quanto|quantos|quantas|who|when|where|how much|how many)\b|\b(o que|como) (voce acha que )?(vai|iria|deve) (acontecer|ser|rolar)\b|\bwhat (will|is going to) happen\b/;
+const CONCEPT = /\b(o que e|o que sao|o que significa|me explica|explica|como funciona|diferenca entre|para que serve|pra que serve|what is|what are|explain|how does|difference between)\b/;
+const ADDRESS_WORDS = new Set(['night', 'claude', 'codex', 'joel', 'eu', 'i', 'ok', 'oi', 'hey']);
+/** Nome próprio no meio da frase ("reunião do GoPom", "CEO da Nvidia"), sem contar o Night e os agentes. */
+function hasProperNoun(original: string, projectNames: string[]): boolean {
+  const own = new Set(projectNames.map(normalize)); // falar do próprio projeto não é pesquisa na internet
+  const tokens = original.split(/\s+/);
+  return tokens.some((raw, i) => {
+    if (i === 0 || /[.?!:]$/.test(tokens[i - 1]!)) return false; // começo de frase tem maiúscula por regra
+    const w = raw.replace(/[^\p{L}\p{N}-]/gu, '');
+    return /^\p{Lu}[\p{L}\p{N}-]+/u.test(w) && !ADDRESS_WORDS.has(normalize(w)) && !own.has(normalize(w));
+  });
+}
 
 // "branch", "merge" e "status" ficam de fora: aparecem demais em pergunta comum ("o que é uma branch?").
 const COMMANDISH = /\b(ideias?|ideas?|tarefas?|tasks?|projetos?|projects?|claude|codex)\b/;
@@ -113,6 +134,10 @@ export function ruleIntent(rawText: string, projectNames: string[]): Intent | nu
   if (winPath && SET_PATH.test(n)) return { kind: 'set-project-path', projectHint: project, path: winPath.replace(/[.,;]+$/, '') };
   // Pesquisa explícita antes de "o que mudou": "pesquisa o que mudou na versão X" é pesquisa.
   if (RESEARCH.test(n)) return { kind: 'research', query: text.trim() };
+  const isQuestion = /\?\s*$/.test(text) || FACT_QUESTION.test(n);
+  if (isQuestion && !CONCEPT.test(n) && (FACT_QUESTION.test(n) || hasProperNoun(text, projectNames))) {
+    return { kind: 'research', query: text.trim() };
+  }
   if (SHOW_DIFF.test(n)) return { kind: 'show-diff', taskHint: project };
   if (STATUS.test(n)) return { kind: 'status', taskHint: project };
   if (DELEGATE.test(n) || (CODE_VERB.test(n) && CODE_NOUN.test(n))) {

@@ -42,6 +42,9 @@ VOICES = {
 }
 KOKORO_LANG = {"pt-BR": "p", "en": "a"}
 WHISPER_MODEL = os.environ.get("NIGHT_WHISPER_MODEL", "small")
+WHISPER_PROMPT_PT = ("Night, pesquisa pra mim, pesquisar, pesquisando, Claude, Codex, Soaken, tarefa, ideia, "
+                     "salva essa ideia, aprovo, descarta, cancela, mostra as mudanças.")
+WHISPER_PROMPT_EN = "Night, search, research, look up, Claude, Codex, task, idea, approve, discard, cancel, show the changes."
 WHISPER_FALLBACK = "base"  # se o small não couber na memória (PC com outros programas pesados abertos)
 THREADS = max(1, (os.cpu_count() or 2) // 2)
 
@@ -164,9 +167,11 @@ class Listener:
             p_en, p_pt = p.get("en", 0), p.get("pt", 0)
             margin = 2.0 if audio_s < 2.5 else 1.0
             language = "en" if p_en > p_pt * margin else "pt"
-        # Os nomes próprios no prompt ajudam o Whisper a escrevê-los certo.
+        # O prompt puxa o Whisper para o vocabulário dos comandos. Sem "pesquisar" aqui, ele ouvia "precisar"
+        # (04/11: "você consegue pesquisar para mim?" virou "precisar" e o pedido não foi reconhecido).
+        prompt = (WHISPER_PROMPT_EN if language == "en" else WHISPER_PROMPT_PT)
         segments, _ = self.model.transcribe(audio, language=language, vad_filter=True, beam_size=5,
-                                            initial_prompt="Night, Claude, Codex, Soaken.")
+                                            initial_prompt=prompt)
         text = " ".join(s.text.strip() for s in segments).strip()
         return {"text": text, "language": "en" if language == "en" else "pt-BR", "audio_s": round(audio_s, 2),
                 "ms": round((time.perf_counter() - t) * 1000)}

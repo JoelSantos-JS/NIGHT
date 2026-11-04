@@ -35,13 +35,17 @@ Jeito: bem-humorado, como um amigo esperto e meio debochado. Responda primeiro e
 com uma piadinha curta ou ironia leve (no máximo uma por resposta, e só se for natural).
 Fale sério, sem piada, quando o assunto for erro, problema, dinheiro, segurança ou algo que preocupe o Joel.
 Responda em português do Brasil, em 1 a 3 frases curtas, como fala (sem markdown, sem listas, sem emoji).
-Se não souber um fato atual, diga que não sabe; não invente. Você não executa código nem tarefas por conta própria.`,
+Você NÃO tem internet nem sabe nada sobre a vida do Joel, reuniões, empresas, pessoas, preços, notícias ou o futuro.
+Se a pergunta depender disso, não chute: diga em uma frase que não sabe e que pode pesquisar com o Codex se ele
+pedir "pesquisa isso". Você não executa código nem tarefas por conta própria.`,
   en: `You are Night, Joel's personal assistant, running on his computer.
 Style: good-humored, like a witty friend with a bit of sass. Answer first and correctly; if it fits, end with one
 short joke or light irony (at most one, and only if it comes naturally).
 Be serious, no jokes, when the topic is an error, a problem, money, security or something worrying Joel.
 Answer in English, in 1 to 3 short spoken sentences (no markdown, no lists, no emoji).
-If you don't know a current fact, say so; don't make things up. You don't run code or tasks on your own.`,
+You have NO internet and know nothing about Joel's life, meetings, companies, people, prices, news or the future.
+If the question depends on that, don't guess: say in one sentence you don't know and that you can look it up with
+Codex if he says "search for it". You don't run code or tasks on your own.`,
 };
 
 // Vai no COMEÇO da fala do dono. Medido em 03/11 com qwen3:1.7b, histórico em PT e pergunta em EN:
@@ -97,7 +101,10 @@ export class NightCoordinator {
     const { intent } = decision;
     if (intent.kind === 'research') {
       // O route_log desta vai depois, com o modelo que de fato respondeu e o uso de cota.
-      const followUp = this.research(intent.query, language, decision.reason);
+      const started = Date.now();
+      this.researching.set(intent.query, started);
+      const followUp = this.research(intent.query, language, decision.reason)
+        .finally(() => this.researching.delete(intent.query));
       return { ...this.finish(text, language, say(language, 'Vou pesquisar isso, já te falo.', "I'll look that up, back in a moment."), 'research', 'rules'), followUp };
     }
     let out: string;
@@ -120,6 +127,8 @@ export class NightCoordinator {
   }
 
   private restored = false;
+  /** Pesquisas em andamento (pergunta → quando começou), para responder "tá pesquisando ainda?". */
+  private researching = new Map<string, number>();
 
   /** Depois de reiniciar, a conversa recente vem do banco: o Night não "esquece" o que ele e os outros disseram. */
   private async restoreHistory(): Promise<void> {
@@ -236,7 +245,15 @@ export class NightCoordinator {
 
   private async status(language: Language): Promise<string> {
     const open = (await this.memory.listTasks()).filter((t) => !FINAL_TASK_STATUSES.includes(t.status));
-    if (open.length === 0) return say(language, 'Nenhuma tarefa aberta agora.', 'No open tasks right now.');
+    const searching = [...this.researching.entries()].map(([q, at]) =>
+      say(language, `pesquisando "${q.slice(0, 60)}" há ${Math.round((Date.now() - at) / 1000)} s`, `researching "${q.slice(0, 60)}" for ${Math.round((Date.now() - at) / 1000)} s`));
+    const research = searching.length ? say(language, `Ainda tô ${searching.join('; ')}. `, `Still ${searching.join('; ')}. `) : '';
+    if (open.length === 0) return research + say(language, 'Nenhuma tarefa aberta agora.', 'No open tasks right now.');
+    if (research) return research + (await this.taskStatus(open, language));
+    return this.taskStatus(open, language);
+  }
+
+  private async taskStatus(open: Task[], language: Language): Promise<string> {
     const describe = (t: Task) => `${t.objective.slice(0, 60)} (${t.primaryAgent}, ${t.status})`;
     return say(language, `${open.length} tarefa${open.length > 1 ? 's' : ''} aberta${open.length > 1 ? 's' : ''}: ${open.map(describe).join('; ')}.`,
       `${open.length} open task${open.length > 1 ? 's' : ''}: ${open.map(describe).join('; ')}.`);

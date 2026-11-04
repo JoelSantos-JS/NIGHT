@@ -93,6 +93,20 @@ describe('regras do roteador', () => {
     }
   });
 
+  test('pergunta sobre fato vai para pesquisa (Codex/Claude), conceito fica no Qwen (teste real 04/11)', () => {
+    for (const t of ['O que você acha que vai acontecer na reunião do GoPom hoje às 18h?', 'Quem é o CEO da Nvidia?',
+      'Quando sai o próximo iPhone?', 'O Ollama roda no Windows?', 'Então, você consegue precisar para mim? Hoje tem reunião do GoPom.',
+      'faz uma pesquisa sobre o Qwen 3', 'pesquisa o preço do Kokoro']) {
+      assert.equal(kind(t), 'research', t);
+    }
+    for (const t of ['Me explica o que é uma API', 'o que é um merge?', 'Qual a diferença entre TCP e UDP?', 'What is a git branch?',
+      'Cadê você, Night? Você tá aí?', 'Tudo bem com você?', 'Me explica como o Docker funciona', 'eu preciso estudar hoje', 'Hello, Night.']) {
+      assert.equal(kind(t), null, t);
+    }
+    assert.equal(kind('Tá precisando ainda?'), 'status', 'o Whisper troca pesquisando por precisando');
+    assert.equal(kind('tá pesquisando ainda?'), 'status');
+  });
+
   test('"cancela" dentro de uma ideia não cancela nada', () => {
     assert.equal(kind('salva essa ideia: botão para cancelar tarefa pelo celular'), 'save-idea');
   });
