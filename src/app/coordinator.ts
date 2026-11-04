@@ -14,7 +14,7 @@ import type { ResearchAgent } from '../agents/research.ts';
 import { QuotaError } from '../agents/research.ts';
 import { buildSharedContext } from '../agents/shared-context.ts';
 import { diffStat, otherAgent, type TaskScheduler } from '../agents/scheduler.ts';
-import { detectLanguage } from '../router/router.ts';
+import { detectLanguage, ruleIntent } from '../router/router.ts';
 
 export interface Reply {
   text: string;
@@ -86,7 +86,11 @@ export class NightCoordinator {
     if (this.pendingIdea) {
       const { projectId } = this.pendingIdea;
       this.pendingIdea = null;
-      return this.finish(text, language, await this.saveIdea(text, projectId, language), 'save-idea', 'rules');
+      // Se a próxima fala for um comando conhecido ("cancela a tarefa", "aprovo"...), é comando, não a ideia.
+      const names = (await this.memory.listProjects()).map((p) => p.name);
+      if (!ruleIntent(text, names)) {
+        return this.finish(text, language, await this.saveIdea(text, projectId, language), 'save-idea', 'rules');
+      }
     }
 
     const decision = await this.router.route(text, language);

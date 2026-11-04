@@ -69,6 +69,21 @@ describe('regras do roteador', () => {
     assert.equal(stripWakeWord('o projeto Night tá parado'), 'o projeto Night tá parado');
   });
 
+  test('aprovar/rejeitar só com a frase no formato esperado (revisão do Codex)', () => {
+    for (const ok of ['aprovo', 'Aprovo o merge', 'aprovo a tarefa', 'aprovo a do Night', 'aprovo isso', 'pode fazer o merge', 'approve it', 'Approve the changes.', 'descarta', 'descarta a do Soaken', 'reject it']) {
+      assert.equal(kind(ok), 'approval', ok);
+    }
+    for (const no of ['aprovo a ideia de vender curso', 'aprova esse texto pra mim', 'approve my essay', 'descarta essa ideia que eu falei', 'aprovo, mas antes me explica']) {
+      assert.notEqual(kind(no), 'approval', no);
+    }
+  });
+
+  test('negação nunca vira cancelar, aprovar ou rejeitar (revisão do Codex)', () => {
+    for (const t of ['não cancela a tarefa', 'nao cancela a tarefa do Night', "don't cancel the task", 'não aprovo', 'nunca descarta']) {
+      assert.ok(!['cancel', 'approval'].includes(kind(t) ?? ''), t);
+    }
+  });
+
   test('"cancela" dentro de uma ideia não cancela nada', () => {
     assert.equal(kind('salva essa ideia: botão para cancelar tarefa pelo celular'), 'save-idea');
   });

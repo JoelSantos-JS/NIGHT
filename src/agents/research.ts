@@ -9,6 +9,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Language } from '../core/types.ts';
+import { agentEnv } from './env.ts';
 
 export interface ResearchResult {
   answer: string;
@@ -46,7 +47,7 @@ ${ctx}Pergunta: ${question}`;
 
 function run(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(cmd, args, { cwd, env: agentEnv(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
@@ -135,6 +136,7 @@ export class ClaudeResearch implements ResearchAgent {
       const r = await run(this.bin, [
         '-p', researchPrompt(question, language, context),
         '--model', this.model,
+        '--tools', 'WebSearch,WebFetch', // nada de Bash/Edit/Write nesta sessão
         '--allowedTools', 'WebSearch', 'WebFetch',
         '--disallowedTools', 'Bash', 'Edit', 'Write', 'NotebookEdit',
         '--output-format', 'json', '--no-session-persistence',

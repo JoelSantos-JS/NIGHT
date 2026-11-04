@@ -6,6 +6,7 @@
 // Uma tarefa por vez. Cancelar mata o processo de verdade. Ao reiniciar, nada que estava rodando volta
 // sozinho: vira `failed` com o motivo (blueprint §8, "resume only tasks that are safe").
 
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { AgentRun, CodingAgent, DiffReport, Memory, WorktreeManager, Worktree } from '../core/interfaces.ts';
 import type { AgentName, Language, Task, TaskStatus } from '../core/types.ts';
@@ -92,11 +93,13 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
     const wt = await this.worktrees.create(project, task.id, task.primaryAgent);
     task = await this.memory.updateTask(task.id, { worktreePath: wt.path, branch: wt.branch, baseRef: wt.baseRef });
     await this.event(task, 'progress', 'scheduler', `worktree ${wt.path} na branch ${wt.branch}, a partir de ${wt.baseRef.slice(0, 12)}`);
-    if (this.cancelRequested.delete(task.id)) return this.cancelled(task, wt, 'cancelada antes de começar');
+    if (this.cancelRequested.has(task.id)) return this.cancelled(task, wt, 'cancelada antes de começar');
 
     // 2. agente trabalha
-    task = await this.setStatus(task, 'running', `o ${task.primaryAgent} começou a trabalhar`, true);
     const context = await buildSharedContext(this.memory, `${task.primaryAgent}:código`, this.language);
+    // Cancelado enquanto criava a worktree ou montava o contexto: o agente nem começa.
+    if (this.cancelRequested.has(task.id)) return this.cancelled(task, wt, 'cancelada antes de começar');
+    task = await this.setStatus(task, 'running', `o ${task.primaryAgent} começou a trabalhar`, true);
     const run = await agent.start(task, wt, codingPrompt(task, wt, context));
     this.runs.set(task.id, { run, agent });
     await this.event(task, 'progress', task.primaryAgent, `processo ${run.pid ?? '?'} rodando`);
@@ -107,7 +110,7 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
       this.runs.delete(task.id);
     }
     await this.event(task, 'agent-output', task.primaryAgent, outcome.summary.slice(0, 4000));
-    if (this.cancelRequested.delete(task.id)) return this.cancelled(task, wt, 'cancelada pelo dono');
+    if (this.cancelRequested.has(task.id)) return this.cancelled(task, wt, 'cancelada pelo dono');
     if (outcome.quota) return this.fail(task, `o ${task.primaryAgent} bateu no limite de uso do plano`, wt);
     if (outcome.killed) return this.fail(task, `o ${task.primaryAgent} passou do tempo máximo e foi parado`, wt);
     if (outcome.exitCode !== 0) return this.fail(task, `o ${task.primaryAgent} saiu com erro: ${outcome.summary.slice(0, 200)}`, wt);
@@ -130,7 +133,13 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
         review = `(a revisão do ${reviewer.name} falhou: ${(err as Error).message.slice(0, 150)})`;
         await this.event(task, 'error', reviewer.name, review);
       }
+      // O revisor deveria só ler. Se algo mudou (ex.: um teste que escreve arquivo), não dá para confiar no diff.
+      const after = await this.worktrees.diff(wt);
+      if (after.patch !== diff.patch) {
+        return this.fail(task, `os arquivos mudaram durante a revisão do ${reviewer.name}; confira a worktree antes de pedir de novo`, wt);
+      }
     }
+    if (this.cancelRequested.has(task.id)) return this.cancelled(task, wt, 'cancelada durante a revisão');
     const conflicts = await this.worktrees.checkMerge(project, wt);
     if (!conflicts.clean) await this.event(task, 'progress', 'scheduler', `conflito com ${project.defaultBranch ?? 'o branch padrão'}: ${conflicts.conflicts.join(', ')}`);
 
@@ -141,8 +150,9 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
       !conflicts.clean && `conflito em: ${conflicts.conflicts.join(', ')}`,
     ].filter(Boolean).join('\n\n');
     task = await this.memory.updateTask(task.id, { resultSummary: summary });
+    if (this.cancelRequested.has(task.id)) return this.cancelled(task, wt, 'cancelada antes de pedir aprovação');
     task = await this.setStatus(task, 'review-ready', 'pronta para revisão');
-    await this.memory.requestApproval(task.id, 'merge', `${wt.branch} → ${project.defaultBranch ?? 'HEAD'}`);
+    await this.requestMergeApproval(task, wt, project.defaultBranch);
     const verdict = /VEREDITO:\s*corrigir/i.test(review) ? `O ${reviewer!.name} revisou e pediu correção.` : review ? `O ${reviewer!.name} revisou e aprovou.` : '';
     await this.setStatus(task, 'awaiting-approval',
       `A tarefa ${task.id} terminou: ${diff.changedFiles.length} arquivo${diff.changedFiles.length > 1 ? 's' : ''} mudado${diff.changedFiles.length > 1 ? 's' : ''}. ${verdict} ${conflicts.clean ? '' : 'Tem conflito com o branch principal. '}Quer aprovar ou descartar?`.replace(/\s+/g, ' ').trim(),
@@ -150,32 +160,60 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
   }
 
   /** Aprova: faz o merge (só se não tiver conflito e a pasta do dono estiver limpa). */
-  async approve(taskId: string): Promise<ApprovalResult> {
-    const { task, project, wt, approval } = await this.pendingFor(taskId);
-    const decided = await this.memory.decideApproval(approval.id, 'approved');
-    const r = await this.worktrees.merge(project, wt, decided);
-    if (!r.merged) {
-      // A aprovação foi usada; volta para revisão com um pedido novo, para tentar de novo depois.
-      await this.event(task, 'error', 'scheduler', `merge não feito: ${r.message}`);
-      await this.setStatus(task, 'review-ready', `merge não feito: ${r.message}`);
-      await this.memory.requestApproval(task.id, 'merge', `${wt.branch} → ${project.defaultBranch ?? 'HEAD'}`);
-      await this.setStatus(await this.reload(task), 'awaiting-approval', 'esperando nova aprovação');
-      return { ok: false, message: `Não fiz o merge: ${r.message}` };
-    }
-    await this.setStatus(task, 'accepted', `merge feito: ${r.message}`, true);
-    try { await this.worktrees.discard(project, wt); } catch (err) {
-      await this.event(task, 'error', 'scheduler', `worktree não apagada: ${(err as Error).message}`);
-    }
-    return { ok: true, message: `Pronto, juntei a tarefa ${task.id} no ${project.defaultBranch ?? 'branch principal'}.` };
+  approve(taskId: string): Promise<ApprovalResult> {
+    return this.exclusive(taskId, async () => {
+      const { task, project, wt, approval } = await this.pendingFor(taskId);
+      // O que vai entrar tem que ser exatamente o que foi mostrado e revisado.
+      const now = fingerprint((await this.worktrees.diff(wt)).patch);
+      if (!approval.scope.endsWith(`#${now}`)) {
+        await this.memory.decideApproval(approval.id, 'rejected');
+        await this.event(task, 'error', 'scheduler', 'a worktree mudou depois da revisão; merge recusado');
+        await this.requestMergeApproval(task, wt, project.defaultBranch);
+        return { ok: false, message: `Não fiz o merge: a tarefa ${task.id} mudou depois que foi revisada. Peça "mostra as mudanças" e aprove de novo se estiver certo.` };
+      }
+      const decided = await this.memory.decideApproval(approval.id, 'approved');
+      const r = await this.worktrees.merge(project, wt, decided);
+      if (!r.merged) {
+        // A aprovação foi usada; volta para revisão com um pedido novo, para tentar de novo depois.
+        await this.event(task, 'error', 'scheduler', `merge não feito: ${r.message}`);
+        await this.setStatus(task, 'review-ready', `merge não feito: ${r.message}`);
+        await this.requestMergeApproval(await this.reload(task), wt, project.defaultBranch);
+        await this.setStatus(await this.reload(task), 'awaiting-approval', 'esperando nova aprovação');
+        return { ok: false, message: `Não fiz o merge: ${r.message}` };
+      }
+      await this.setStatus(task, 'accepted', `merge feito: ${r.message}`, true);
+      try { await this.worktrees.discard(project, wt); } catch (err) {
+        await this.event(task, 'error', 'scheduler', `worktree não apagada: ${(err as Error).message}`);
+      }
+      return { ok: true, message: `Pronto, juntei a tarefa ${task.id} no ${project.defaultBranch ?? 'branch principal'}.` };
+    });
   }
 
   /** Rejeita: apaga só a worktree e a branch do agente. O branch principal não muda. */
-  async reject(taskId: string): Promise<ApprovalResult> {
-    const { task, project, wt, approval } = await this.pendingFor(taskId);
-    await this.memory.decideApproval(approval.id, 'rejected');
-    await this.worktrees.discard(project, wt);
-    await this.setStatus(task, 'rejected', 'descartada pelo dono; o branch principal não mudou', true);
-    return { ok: true, message: `Descartei a tarefa ${task.id}. Nada mudou no projeto.` };
+  reject(taskId: string): Promise<ApprovalResult> {
+    return this.exclusive(taskId, async () => {
+      const { task, project, wt, approval } = await this.pendingFor(taskId);
+      await this.memory.decideApproval(approval.id, 'rejected');
+      await this.worktrees.discard(project, wt);
+      await this.setStatus(task, 'rejected', 'descartada pelo dono; o branch principal não mudou', true);
+      return { ok: true, message: `Descartei a tarefa ${task.id}. Nada mudou no projeto.` };
+    });
+  }
+
+  /** Pede aprovação de merge guardando a "impressão digital" do diff que o dono vai ver. */
+  private async requestMergeApproval(task: Task, wt: Worktree, target: string | null): Promise<void> {
+    const fp = fingerprint((await this.worktrees.diff(wt)).patch);
+    await this.memory.requestApproval(task.id, 'merge', `${wt.branch} → ${target ?? 'HEAD'} #${fp}`);
+  }
+
+  /** Aprovar, rejeitar e cancelar a mesma tarefa nunca rodam ao mesmo tempo (revisão do Codex, 04/11). */
+  private locks = new Map<string, Promise<unknown>>();
+  private exclusive<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(taskId) ?? Promise.resolve();
+    const next = prev.catch(() => {}).then(fn);
+    this.locks.set(taskId, next);
+    void next.finally(() => { if (this.locks.get(taskId) === next) this.locks.delete(taskId); }).catch(() => {});
+    return next;
   }
 
   /** Resumo do que mudou (para "mostra as mudanças"). */
@@ -186,7 +224,35 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
     return { task, diff };
   }
 
-  async cancel(taskId: string): Promise<{ killed: boolean; detail: string }> {
+  cancel(taskId: string): Promise<{ killed: boolean; detail: string }> {
+    return this.exclusive(taskId, () => this.cancelNow(taskId));
+  }
+
+  /**
+   * Ao fechar o Night: mata os agentes que estão rodando e espera eles saírem, ANTES de soltar a trava.
+   * Senão outra instância assumiria e marcaria como falha uma tarefa com processo ainda vivo (revisão do Codex).
+   */
+  async shutdown(timeoutMs = 10_000): Promise<void> {
+    this.queue = [];
+    const live = [...this.runs.entries()];
+    for (const [taskId, { agent, run }] of live) {
+      this.cancelRequested.add(taskId);
+      await agent.cancel(run).catch(() => {});
+    }
+    const deadline = new Promise((r) => setTimeout(r, timeoutMs));
+    await Promise.race([Promise.all(live.map(([, { run }]) => run.done.catch(() => {}))), deadline]);
+    // Dá tempo do execute() gravar o "cancelled" antes de o banco fechar.
+    await Promise.race([this.idle(), deadline]);
+  }
+
+  private idle(): Promise<void> {
+    return new Promise((resolve) => {
+      const check = () => (this.busy ? setTimeout(check, 50) : resolve());
+      check();
+    });
+  }
+
+  private async cancelNow(taskId: string): Promise<{ killed: boolean; detail: string }> {
     const task = await this.memory.getTask(taskId);
     if (!task) return { killed: false, detail: `tarefa ${taskId} não existe` };
     if (FINAL_TASK_STATUSES.includes(task.status)) return { killed: false, detail: `a tarefa já estava ${task.status}` };
@@ -199,8 +265,9 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
       return r; // o execute() vê o pedido e marca cancelled quando o processo morrer
     }
     if (RUNNING.includes(task.status)) {
-      this.cancelRequested.add(taskId); // está criando a worktree; para no próximo passo
-      return { killed: true, detail: 'vai parar antes do agente começar' };
+      // Criando a worktree ou na revisão: o execute() confere o pedido no próximo passo e para.
+      this.cancelRequested.add(taskId);
+      return { killed: true, detail: task.status === 'testing' ? 'para assim que a revisão terminar, sem pedir aprovação' : 'para antes do agente começar' };
     }
     this.queue = this.queue.filter((id) => id !== taskId);
     // Esperando aprovação: o pedido de merge não pode ficar aberto depois de cancelar.
@@ -255,6 +322,7 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
   }
 
   private async cancelled(task: Task, wt: Worktree, why: string): Promise<void> {
+    this.cancelRequested.delete(task.id);
     await this.setStatus(task, 'cancelled', `Cancelei a tarefa ${task.id}: ${why}.`, true);
     await this.discardQuietly({ ...task, worktreePath: wt.path, branch: wt.branch, baseRef: wt.baseRef });
   }
@@ -270,8 +338,15 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
   }
 }
 
+/** "Impressão digital" do diff: se mudar entre a revisão e o "aprovo", o merge é recusado. */
+export function fingerprint(patch: string): string {
+  return createHash('sha256').update(patch).digest('hex').slice(0, 16);
+}
+
 export function diffStat(diff: DiffReport): string {
-  return diff.changedFiles.map((f) => `- ${f.status}: ${f.path}`).join('\n') || '(nada)';
+  // Nome de arquivo com quebra de linha ou "<tag>" não pode virar instrução no prompt do revisor.
+  const clean = (p: string) => p.replace(/[\u0000-\u001f<>]/g, '?');
+  return diff.changedFiles.map((f) => `- ${f.status}: ${clean(f.path)}`).join('\n') || '(nada)';
 }
 
 export { other as otherAgent };

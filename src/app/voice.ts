@@ -136,6 +136,7 @@ try {
   }
 } finally {
   rl.close();
+  await tasks.shutdown(); // mata agentes vivos antes de soltar a trava
   await chain;
   await speech.close();
   await memory.close();

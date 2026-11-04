@@ -47,8 +47,13 @@ const FIND_IDEAS = /\b(quais|mostra|mostre|lista|liste|lembra|busca|procura)\b.{
 const STATUS = /\bo que (voce )?(esta|ta) (fazendo|rodando)\b|\b(o que|que) (esta|ta) rodando\b|\bwhat('?s| is| are)( you)? (running|doing|working on)\b|\bstatus\b|\bcomo (esta|ta|anda|vai) (a |o )?(tarefa|trabalho|experimento)\b|\bhow is\b.{0,40}\b(task|going)\b|\bprogress\b|\bandamento\b/;
 const STOP_SPEAKING = /^(para|pare|parar) de falar\b|^(stop|quit) talking\b|^silencio\b|^(shut up|be quiet|quiet)\b|^chega\b/;
 const CANCEL = /\b(cancela|cancele|cancelar|interrompe|interrompa|para|pare|parar|mata)\b.{0,40}\b(tarefa|task|agentes?|tudo)\b|\b(cancel|stop|kill|abort)\b.{0,40}\b(task|agents?|everything|job)\b/;
-const APPROVE = /^(eu )?(aprovo|aprova|aprovar|aprovado|pode (fazer o )?merge|approve|approved)\b/;
-const REJECT = /^(eu )?(rejeito|rejeita|rejeitar|descarta|descarte|descartar|reject|discard)\b/;
+// Aprovar/rejeitar só com a frase INTEIRA no formato esperado: "aprovo", "aprovo o merge", "aprovo a do Night",
+// "approve it". "Aprovo a ideia" ou "aprova esse texto" não podem virar merge (revisão do Codex, 04/11).
+const DECISION_TAIL = /( (o |a |as |os |the )?(merge|tarefa|task|mudancas?|alteracoes|changes?|isso|it|tudo|everything))?( ((a|o) )?(do|da|no|na|de|for|in|on) (projeto |project )?[\w-]+)?[.!]?$/.source;
+const APPROVE = new RegExp(`^(eu )?(aprovo|aprova|aprovar|aprovado|pode fazer o merge|pode juntar|approve|approved)${DECISION_TAIL}`);
+const REJECT = new RegExp(`^(eu )?(rejeito|rejeita|rejeitar|descarta|descarte|descartar|reject|discard)${DECISION_TAIL}`);
+// "Não cancela", "não aprova", "don't cancel": negação nunca vira comando de controle.
+const NEGATED = /\b(nao|nunca|nem|jamais|do not|never|dont|don['’ ]?t)\b/;
 const CODE_VERB = /\b(implementa|implemente|implementar|cria|crie|criar|escreve|escreva|escrever|corrige|corrija|corrigir|refatora|refatore|conserta|conserte|adiciona|adicione|build|implement|write|fix|refactor|create|add)\b/;
 const CODE_NOUN = /\b(codigo|code|feature|funcao|function|parser|bug|testes?|tests?|branch|modulo|module|api|endpoint|script|classe|class|componente|component|docker|deploy|migracao|migration)\b/;
 const DELEGATE = /\b(pede|peca|pedir|manda|mande|fala|diz)\b.{0,6}\b(pro|para o|ao|o)\b.{0,3}\b(claude|codex)\b|\b(ask|tell|have|use|let)\b.{0,6}\b(claude|codex)\b|\b(use|usa|usar|com o)\b.{0,3}\b(claude|codex)\b/;
@@ -94,9 +99,10 @@ export function ruleIntent(rawText: string, projectNames: string[]): Intent | nu
   const project = projectIn(n, projectNames);
 
   if (STOP_SPEAKING.test(n)) return { kind: 'stop-speaking' };
-  if (APPROVE.test(n)) return { kind: 'approval', decision: 'approve', taskHint: project };
-  if (REJECT.test(n)) return { kind: 'approval', decision: 'reject', taskHint: project };
-  if (CANCEL.test(n) && !SAVE_IDEA.test(n)) return { kind: 'cancel', taskHint: project ?? (/\b(tudo|todos|all|everything)\b/.test(n) ? 'all' : null) };
+  const negated = NEGATED.test(n);
+  if (!negated && APPROVE.test(n)) return { kind: 'approval', decision: 'approve', taskHint: project };
+  if (!negated && REJECT.test(n)) return { kind: 'approval', decision: 'reject', taskHint: project };
+  if (!negated && CANCEL.test(n) && !SAVE_IDEA.test(n)) return { kind: 'cancel', taskHint: project ?? (/\b(tudo|todos|all|everything)\b/.test(n) ? 'all' : null) };
   if (SAVE_IDEA.test(n)) return { kind: 'save-idea', projectHint: project, text: ideaBody(text, project) };
   if (FIND_IDEAS.test(n)) return { kind: 'find-ideas', projectHint: project, query: '' };
   const winPath = text.match(WIN_PATH)?.[1];

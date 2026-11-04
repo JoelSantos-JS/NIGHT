@@ -64,5 +64,6 @@ try {
   console.log(`Log: ${git('log', '--oneline', '-5').split('\n').join(' | ')}`);
   console.log(`Tempo total: ${secs()}`);
 } finally {
+  await tasks.shutdown();
   await memory.close();
 }

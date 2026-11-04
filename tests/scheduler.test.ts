@@ -20,8 +20,9 @@ class FakeWorktrees implements WorktreeManager {
     this.created.push(taskId);
     return { path: `D:/NIGHT-data/worktrees/${project.id}/${agent}-${taskId}`, branch: `agent/${agent}/${taskId}`, baseRef: 'abc123def4567890' };
   }
+  patch = '+export function parse() {}';
   async diff(wt: Worktree): Promise<DiffReport> {
-    return { baseRef: wt.baseRef, headRef: 'HEAD', changedFiles: this.files, patch: '+export function parse() {}' };
+    return { baseRef: wt.baseRef, headRef: 'HEAD', changedFiles: this.files, patch: this.patch };
   }
   async checkMerge() { return { clean: this.conflicts.length === 0, conflicts: this.conflicts }; }
   async merge(_p: Project, wt: Worktree, approval: Approval) {
@@ -57,8 +58,8 @@ class FakeAgent implements CodingAgent {
 
 class FakeReviewer implements Reviewer {
   prompts: string[] = [];
-  constructor(readonly name: 'claude' | 'codex', private readonly verdict = 'VEREDITO: aprovar\n- nada grave') {}
-  async review(_wt: Worktree, prompt: string) { this.prompts.push(prompt); return this.verdict; }
+  constructor(readonly name: 'claude' | 'codex', private readonly verdict = 'VEREDITO: aprovar\n- nada grave', private readonly during?: () => void | Promise<void>) {}
+  async review(_wt: Worktree, prompt: string) { this.prompts.push(prompt); await this.during?.(); return this.verdict; }
 }
 
 const until = async (cond: () => Promise<boolean>, ms = 3000) => {
@@ -249,6 +250,77 @@ describe('execução de tarefas de código', () => {
     const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm, []);
     assert.match((await n.handle('cancela a tarefa do Night')).text, /está com a outra janela do Night/);
     assert.equal(await status('t12'), 'running');
+  });
+
+  test('revisor que muda arquivo faz a tarefa falhar, sem pedir aprovação (revisão do Codex)', async () => {
+    const reviewer = new FakeReviewer('codex', 'VEREDITO: aprovar', () => { wts.patch += '\n+// escrito pelo teste do revisor'; });
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') }, { codex: reviewer });
+    await newTask('t13');
+    await s.enqueue('t13');
+    await until(async () => (await status('t13')) === 'failed');
+    assert.match((await mem.getTask('t13'))!.resultSummary!, /mudaram durante a revisão do codex/);
+    assert.equal((await mem.listPendingApprovals()).length, 0);
+  });
+
+  test('mudou depois da revisão: "aprovo" não faz merge (revisão do Codex)', async () => {
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') });
+    await newTask('t14', { reviewAgent: null });
+    await s.enqueue('t14');
+    await until(async () => (await status('t14')) === 'awaiting-approval');
+    wts.patch += '\n+// alguém mexeu na worktree depois';
+    const r = await s.approve('t14');
+    assert.equal(r.ok, false);
+    assert.match(r.message, /mudou depois que foi revisada/);
+    assert.deepEqual(wts.merged, []);
+    assert.equal(await status('t14'), 'awaiting-approval');
+    assert.match((await s.approve('t14')).message, /juntei/, 'o pedido novo vale para o diff atual');
+  });
+
+  test('cancelar durante a revisão para sem pedir aprovação (revisão do Codex)', async () => {
+    let s!: TaskScheduler;
+    const reviewer = new FakeReviewer('codex', 'VEREDITO: aprovar', async () => { await s.cancel('t15'); });
+    s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') }, { codex: reviewer });
+    await newTask('t15');
+    await s.enqueue('t15');
+    await until(async () => (await status('t15')) === 'cancelled');
+    assert.equal((await mem.listPendingApprovals()).length, 0);
+    assert.deepEqual(wts.merged, []);
+  });
+
+  test('aprovar e cancelar ao mesmo tempo: um de cada vez, nunca cancelada com merge feito', async () => {
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') });
+    await newTask('t16', { reviewAgent: null });
+    await s.enqueue('t16');
+    await until(async () => (await status('t16')) === 'awaiting-approval');
+    const [a, c] = await Promise.all([s.approve('t16'), s.cancel('t16')]);
+    assert.equal(a.ok, true);
+    assert.match(c.detail, /já estava accepted/);
+    assert.equal(await status('t16'), 'accepted');
+  });
+
+  test('fechar o Night mata o agente e marca a tarefa como cancelada antes de soltar', async () => {
+    const claude = new FakeAgent('claude', null);
+    const s = new TaskScheduler(mem, wts, { claude, codex: new FakeAgent('codex') });
+    await newTask('t17');
+    await s.enqueue('t17');
+    await until(async () => s.running().includes('t17'));
+    await s.shutdown(2000);
+    assert.equal(await status('t17'), 'cancelled');
+    assert.deepEqual(s.running(), []);
+  });
+
+  test('esperando o texto da ideia, "cancela a tarefa" é comando, não ideia (revisão do Codex)', async () => {
+    const llm = new FakeLlm();
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude', null), codex: new FakeAgent('codex') });
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm, [], s);
+    await n.handle('pede pro claude criar o parser de sinais no Night');
+    const [task] = await mem.listTasks();
+    await until(async () => s.running().includes(task!.id));
+    await n.handle('salva uma ideia para o Night');
+    const r = await n.handle('cancela a tarefa do Night');
+    assert.match(r.text, /^Cancelei a tarefa/);
+    assert.equal((await mem.findIdeas({})).length, 0, 'não virou ideia');
+    await until(async () => (await status(task!.id)) === 'cancelled');
   });
 
   test('"sem revisão" desliga o segundo agente', async () => {
