@@ -24,6 +24,8 @@ O que dá para falar:
 | "Pede pro Claude/Codex <mudança> no <projeto>" | o agente faz numa worktree; o outro revisa; ele avisa quando termina |
 | "Mostra as mudanças" · "Aprovo" · "Descarta" · "Cancela a tarefa" | executor de tarefas |
 | "O que tá rodando?" | banco (status real) |
+| "Roda o <pasta> pra mim" → "pode" | acha a pasta (Desktop, Documentos, D:), diz como vai rodar e só roda depois do "pode", numa janela própria |
+| "Procura a pasta <nome>" | acha e cadastra como projeto |
 | "A pasta do <projeto> é C:\…" (digitado) | liga o projeto ao repositório |
 
 ## Preparar (uma vez)
