@@ -15,7 +15,8 @@
     "night:voz": "node --disable-warning=ExperimentalWarning --import tsx src/app/voice.ts",
     "test:voz": "node --import tsx --test \"tests/voice/**/*.test.ts\"",
     "night:teste": "node --disable-warning=ExperimentalWarning --import tsx src/app/voice-test.ts",
-    "e2e:agentes": "node --disable-warning=ExperimentalWarning --import tsx scripts/e2e-agents.ts"
+    "e2e:agentes": "node --disable-warning=ExperimentalWarning --import tsx scripts/e2e-agents.ts",
+    "night:calibrar": "node --disable-warning=ExperimentalWarning --import tsx src/app/calibrate.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

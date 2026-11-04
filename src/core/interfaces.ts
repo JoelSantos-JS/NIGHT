@@ -35,6 +35,8 @@ export interface Transcript {
   confidence?: number;
   /** O áudio tinha ruído forte e foi limpo antes de transcrever. */
   denoised?: boolean;
+  /** Onde a fala foi salva (só com NIGHT_SAVE_AUDIO_DIR, para calibragem). */
+  audioPath?: string;
 }
 
 /** Aperta-e-fala (blueprint §6): o microfone só abre entre startListening e stopListening. */

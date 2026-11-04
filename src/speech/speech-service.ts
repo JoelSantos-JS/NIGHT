@@ -175,5 +175,6 @@ function toTranscript(m: Msg): Transcript {
     doubt: typeof m.doubt === 'string' ? m.doubt : null,
     ...(typeof m.confidence === 'number' ? { confidence: m.confidence } : {}),
     ...(m.denoised === true ? { denoised: true } : {}),
+    ...(typeof m.audio_path === 'string' ? { audioPath: m.audio_path } : {}),
   };
 }

@@ -43,9 +43,10 @@ VOICES = {
 }
 KOKORO_LANG = {"pt-BR": "p", "en": "a"}
 WHISPER_MODEL = os.environ.get("NIGHT_WHISPER_MODEL", "small")
-WHISPER_PROMPT_PT = ("Night, pesquisa pra mim, pesquisar, pesquisando, Claude, Codex, Soaken, tarefa, ideia, "
-                     "salva essa ideia, aprovo, descarta, cancela, mostra as mudanças.")
-WHISPER_PROMPT_EN = "Night, search, research, look up, Claude, Codex, task, idea, approve, discard, cancel, show the changes."
+# Frase natural, não lista de palavras: com a lista ("pesquisa pra mim, pesquisar, pesquisando, ...") o Whisper
+# copiava o prompt na transcrição ("Night, pesquisar, pesquisar, pesquisar", uso real 04/11).
+WHISPER_PROMPT_PT = os.environ.get("NIGHT_STT_PROMPT_PT", "Oi Night, pesquisa pra mim uma coisa e depois fala com o Claude e o Codex.")
+WHISPER_PROMPT_EN = os.environ.get("NIGHT_STT_PROMPT_EN", "Hey Night, search something for me and then talk to Claude and Codex.")
 WHISPER_FALLBACK = "base"
 # Confiança mínima do Whisper. Fala lida e clara fica entre -0,1 e -0,5; fala longa e espontânea do Joel cai mais
 # (04/11: uma fala de 16 s transcrita certinha foi descartada com o limite único de -0,8). Frase curta é onde ele
@@ -215,6 +216,24 @@ class Listener:
 
 
 DENOISE_BELOW_DB = float(os.environ.get("NIGHT_DENOISE_BELOW_DB", "12"))
+# Só com NIGHT_SAVE_AUDIO_DIR: guarda cada fala em WAV (calibragem do Whisper com a voz do Joel). Local, e só
+# as últimas SAVE_KEEP ficam; sem a variável, nada de áudio vai para o disco (blueprint §9).
+SAVE_DIR = os.environ.get("NIGHT_SAVE_AUDIO_DIR", "")
+SAVE_KEEP = int(os.environ.get("NIGHT_SAVE_AUDIO_KEEP", "60"))
+
+
+def save_utterance(audio: np.ndarray) -> str | None:
+    if not SAVE_DIR:
+        return None
+    import soundfile as sf
+
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    path = os.path.join(SAVE_DIR, time.strftime("fala-%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}.wav")
+    sf.write(path, audio, SAMPLE_RATE_IN)
+    files = sorted(f for f in os.listdir(SAVE_DIR) if f.startswith("fala-") and f.endswith(".wav"))
+    for old in files[:-SAVE_KEEP]:
+        os.remove(os.path.join(SAVE_DIR, old))
+    return path
 
 
 def snr_db(audio: np.ndarray) -> float:
@@ -290,8 +309,9 @@ def main() -> None:
             if ev is None:
                 return
             try:
+                saved = save_utterance(ev["audio"])
                 r = listener.transcribe(ev["audio"], None)
-                send({"type": "utterance", "speech_s": ev["speech_s"], "cut": ev["cut"], **r})
+                send({"type": "utterance", "speech_s": ev["speech_s"], "cut": ev["cut"], "audio_path": saved, **r})
             except Exception as e:  # noqa: BLE001
                 send({"type": "error", "message": f"transcrição: {e}"})
 
