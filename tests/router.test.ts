@@ -182,3 +182,14 @@ describe('NightRouter com modelo', () => {
     }
   });
 });
+
+describe('nome de projeto com erro do Whisper (calibragem 04/11)', () => {
+  test('uma letra errada ainda acha o projeto; palavra comum não', async () => {
+    const { projectIn, normalize } = await import('../src/router/router.ts');
+    const P = ['Soaken', 'Night', 'Sandbox', 'Facebook', 'Sinais'];
+    assert.equal(projectIn(normalize('salva essa ideia para o soken'), P), 'Soaken');
+    assert.equal(projectIn(normalize('pede pro claude corrigir no sandbx'), P), 'Sandbox');
+    assert.equal(projectIn(normalize('tô cansado hoje'), P), null);
+    assert.equal(projectIn(normalize('salva no sinal'), P), null, 'nome curto não usa aproximação');
+  });
+});

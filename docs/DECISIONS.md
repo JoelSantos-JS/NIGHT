@@ -127,3 +127,18 @@ O Qwen continua local no roteador (classificar frase ambígua) e como reserva of
 Voz: `pm_santa` também em inglês (o Joel gostou dela em português).
 Whisper: limite de confiança por duração (-0,8 abaixo de 4 s, -1,4 acima): uma fala longa de 16 s transcrita
 certinha tinha sido descartada.
+
+## D-014 — Transcrição: o gargalo é o microfone Bluetooth, não o modelo (04/11/2026)
+Calibragem com a voz do Joel (`pnpm night:calibrar`, 13 frases, fone BW06 Bluetooth), medida com
+`services/speech/bench_stt.py`:
+| modelo | palavras erradas | nomes errados | tempo por 1 s de fala |
+|---|---|---|---|
+| small | 29% | 6/14 | 0,8 s |
+| medium | 21% | 6/14 | 2,6 s |
+| large-v3-turbo | 21% | 7/14 | 3,3 s |
+Sem a frase de ajuda no prompt, os nomes errados sobem para 8–11/14: ela fica. O áudio do fone tem 1,3% da energia
+acima de 4 kHz (voz normal: 5–15%): Bluetooth em modo de ligação corta as consoantes. Ruído não é o problema
+(SNR 39 dB). Modelo maior ajuda pouco e fica lento demais para conversa no Ryzen 5 5500; fica o `small`.
+Próximo passo: calibrar com o microfone do celular (Iriun) ou com fio. Com outro microfone, o fone também volta a
+tocar a voz do Night em qualidade de música (o microfone aberto força o modo de ligação).
+Também: nome de projeto com 1 letra errada a cada 4 é aceito no roteador ("soken" → Soaken).

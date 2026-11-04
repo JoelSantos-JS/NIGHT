@@ -37,7 +37,35 @@ function agentIn(n: string): AgentName | null {
 /** Acha o nome de um projeto cadastrado dentro da frase. O mais longo ganha ("Abstrike Pro" > "Abstrike"). */
 export function projectIn(n: string, projectNames: string[]): string | null {
   const hits = projectNames.filter((p) => new RegExp(`\\b${escapeRe(normalize(p))}\\b`).test(n));
-  return hits.sort((a, b) => b.length - a.length)[0] ?? null;
+  if (hits.length) return hits.sort((a, b) => b.length - a.length)[0]!;
+  // Nome que o Whisper escreveu quase certo ("Souk"/"Soaken", "Copon"/"Copom", calibragem do Joel 04/11):
+  // palavra parecida com um nome de projeto de 5+ letras, com no máximo 1 letra diferente a cada 4.
+  const words = n.split(/[^a-z0-9]+/).filter((w) => w.length >= 4);
+  let best: { name: string; dist: number } | null = null;
+  for (const p of projectNames) {
+    const target = normalize(p).replace(/[^a-z0-9]/g, '');
+    if (target.length < 5) continue;
+    for (const w of words) {
+      const d = editDistance(w, target);
+      if (d > 0 && d <= Math.floor(target.length / 4) && (!best || d < best.dist)) best = { name: p, dist: d };
+    }
+  }
+  return best?.name ?? null;
+}
+
+/** Distância de edição (Levenshtein) entre duas palavras curtas. */
+export function editDistance(a: string, b: string): number {
+  const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0]!;
+    d[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cur = d[j]!;
+      d[j] = Math.min(d[j]! + 1, d[j - 1]! + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+  }
+  return d[b.length]!;
 }
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
