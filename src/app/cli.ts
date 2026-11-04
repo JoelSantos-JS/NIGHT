@@ -8,7 +8,8 @@ import type { Reply } from './coordinator.ts';
 const DIM = '\u001b[2m';
 const RESET = '\u001b[0m';
 
-const { memory, llm, llmOk, night, tasks, stuck } = await createNight();
+const { memory, llm, llmOk, night, tasks, stuck, runsTasks } = await createNight();
+if (!runsTasks) console.log('Outra janela do Night já cuida das tarefas de código; esta conversa, pesquisa e salva ideias.');
 tasks.on('update', (u) => console.log(u.important ? `\nnight › ${u.message}` : `${DIM}[tarefa ${u.task.id}] ${u.message}${RESET}`));
 if (stuck.length) console.log(`${stuck.length} tarefa(s) estavam rodando quando o Night fechou; marquei como falha.`);
 if (!llmOk) console.error(`Aviso: o Ollama não respondeu ou não tem o modelo ${llm.model}. A conversa vai falhar até ele subir.`);

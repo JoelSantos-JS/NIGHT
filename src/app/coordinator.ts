@@ -259,8 +259,8 @@ export class NightCoordinator {
       worktreePath: null, branch: null, baseRef: null, resultSummary: null, approvalState: 'none',
     });
     if (!this.tasks) {
-      return say(language, `Registrei a tarefa ${task.id} no ${project.name} para o ${agent}, mas a execução de agentes está desligada.`,
-        `I registered task ${task.id} in ${project.name} for ${agent}, but agent execution is off.`);
+      return say(language, `Registrei a tarefa ${task.id} no ${project.name} para o ${agent}, mas quem executa tarefas é a outra janela do Night que está aberta; ela pega quando essa fechar e abrir de novo.`,
+        `I registered task ${task.id} in ${project.name} for ${agent}, but another open Night window runs tasks; it starts when that one is reopened.`);
     }
     await this.tasks.enqueue(task.id);
     const reviewer = task.reviewAgent ? say(language, `, e o ${task.reviewAgent} revisa`, `, and ${task.reviewAgent} reviews it`) : '';
@@ -298,9 +298,14 @@ export class NightCoordinator {
       if (this.tasks) {
         const r = await this.tasks.cancel(t.id);
         results.push(`${t.id}: ${r.detail}`);
-      } else {
+      } else if (t.status === 'captured') {
+        // Sem executor nesta janela: só dá para cancelar o que nunca começou. Mudar o status de uma tarefa
+        // viva da outra janela deixaria o processo do agente rodando.
         await this.memory.updateTaskStatus(t.id, 'cancelled', 'owner', 'cancelada por comando');
         results.push(t.id);
+      } else {
+        return say(language, `A tarefa ${t.id} está com a outra janela do Night; cancele por lá para o processo parar de verdade.`,
+          `Task ${t.id} belongs to the other Night window; cancel it there so the process really stops.`);
       }
     }
     return say(language, `Cancelei ${targets.length === 1 ? 'a tarefa' : `${targets.length} tarefas`}${this.tasks ? ` (${results.join('; ')})` : ''}.`,
@@ -315,7 +320,7 @@ export class NightCoordinator {
   private async approval(intent: Extract<Intent, { kind: 'approval' }>, language: Language): Promise<string> {
     const waiting = await this.waitingTasks();
     if (waiting.length === 0) return say(language, 'Não tem nada esperando aprovação.', 'Nothing is waiting for approval.');
-    if (!this.tasks) return say(language, 'A execução de agentes está desligada; não dá para aprovar agora.', "Agent execution is off; I can't approve now.");
+    if (!this.tasks) return say(language, 'Quem cuida das tarefas é a outra janela do Night; aprove por lá.', "Another Night window handles tasks; approve there.");
     const targets = await this.pickTasks(intent.taskHint, waiting);
     if (targets.length !== 1) {
       return say(language, `Tem ${waiting.length} tarefas esperando. Fale o projeto junto, por exemplo "aprovo a do ${(await this.memory.getProject(waiting[0]!.projectId))?.name ?? 'projeto'}".`,

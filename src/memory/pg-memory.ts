@@ -17,6 +17,8 @@ export const DEFAULT_DATABASE_URL = 'postgres://night@localhost:5433/night';
 const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations');
 /** Chave do pg_advisory_lock: impede duas instâncias migrando ao mesmo tempo. */
 const MIGRATION_LOCK = 0x4e494748;
+/** Chave da trava "esta instância executa tarefas". */
+const TASK_LOCK = 0x4e544b31;
 
 type Row = Record<string, any>;
 type Queryable = pg.Pool | pg.PoolClient;
@@ -311,7 +313,34 @@ export class PgMemory implements Memory {
     return rows.map((r) => ({ at: iso(r.at)!, text: r.text, intent: r.intent, model: r.model, reply: r.reply }));
   }
 
+  /**
+   * Só uma instância do Night executa tarefas por vez (a trava vive enquanto a conexão estiver aberta).
+   * Sem isso, abrir uma segunda janela marcaria como "falhou" as tarefas vivas da primeira.
+   * Devolve a função que solta a trava, ou null se outra instância já tem.
+   */
+  async acquireTaskLock(): Promise<(() => Promise<void>) | null> {
+    const client = await this.pool.connect();
+    const { rows } = await client.query('SELECT pg_try_advisory_lock($1) AS ok', [TASK_LOCK]);
+    if (!rows[0]?.ok) {
+      client.release();
+      return null;
+    }
+    this.lockClient = client;
+    return async () => {
+      if (this.lockClient !== client) return;
+      this.lockClient = null;
+      await client.query('SELECT pg_advisory_unlock($1)', [TASK_LOCK]).catch(() => {});
+      client.release();
+    };
+  }
+
+  private lockClient: pg.PoolClient | null = null;
+
   async close(): Promise<void> {
+    if (this.lockClient) {
+      this.lockClient.release();
+      this.lockClient = null;
+    }
     await this.pool.end();
   }
 }

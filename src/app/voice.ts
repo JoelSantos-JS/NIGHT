@@ -26,7 +26,8 @@ const HALLUCINATIONS = [
   /^[\s.…!?,-]*$/,
 ];
 
-const { memory, llm, llmOk, night, tasks, stuck } = await createNight();
+const { memory, llm, llmOk, night, tasks, stuck, runsTasks } = await createNight();
+if (!runsTasks) console.log('Outra janela do Night já cuida das tarefas de código; esta conversa, pesquisa e salva ideias.');
 if (!llmOk) console.error(`${RED}Aviso: o Ollama não respondeu ou não tem o ${llm.model}. A conversa vai falhar até ele subir.${RESET}`);
 
 const speech = new SpeechService();

@@ -23,7 +23,11 @@ export async function createNight() {
     { claude: new ClaudeCodingAgent(), codex: new CodexCodingAgent() },
     { claude: new ClaudeReviewer(), codex: new CodexReviewer() },
   );
+  // Só a instância que pega a trava executa tarefas e faz a checagem de reinício. Uma segunda janela
+  // conversa, pesquisa e salva ideias, mas não mexe nas tarefas da primeira.
+  const unlock = await memory.acquireTaskLock();
   // O que estava rodando quando o Night fechou não recomeça sozinho.
-  const stuck = await tasks.reconcile();
-  return { memory, llm, llmOk, tasks, stuck, night: new NightCoordinator(memory, router, llm, researchers, tasks) };
+  const stuck = unlock ? await tasks.reconcile() : [];
+  const night = new NightCoordinator(memory, router, llm, researchers, unlock ? tasks : undefined);
+  return { memory, llm, llmOk, tasks, stuck, runsTasks: Boolean(unlock), night };
 }

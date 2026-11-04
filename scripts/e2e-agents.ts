@@ -27,7 +27,12 @@ git('-c', 'user.name=Night', '-c', 'user.email=night@local', 'commit', '-m', 'in
 const before = { head: git('rev-parse', 'HEAD'), math: readFileSync(path.join(REPO, 'math.js'), 'utf8') };
 
 // 2. o Night, com o projeto cadastrado
-const { memory, night, tasks } = await createNight();
+const { memory, night, tasks, runsTasks } = await createNight();
+if (!runsTasks) {
+  console.error('Outra janela do Night está aberta e cuida das tarefas. Feche ela e rode de novo.');
+  await memory.close();
+  process.exit(1);
+}
 await memory.upsertProject({ id: 'sandbox', name: 'Sandbox', description: 'repositório descartável de teste', repoPath: REPO, defaultBranch: 'main', allowedPaths: [], status: 'active' });
 const t0 = Date.now();
 const secs = () => `${((Date.now() - t0) / 1000).toFixed(0)}s`;

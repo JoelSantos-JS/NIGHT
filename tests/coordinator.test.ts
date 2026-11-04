@@ -93,7 +93,7 @@ describe('NightCoordinator', () => {
   test('teste 4 do blueprint: pedido de código vira tarefa, o modelo local não escreve código', async () => {
     const r = await night.handle('Pede pro Codex escrever um parser no Abstrike');
     assert.equal(r.intent, 'coding-task');
-    assert.match(r.text, /Registrei a tarefa \w+ no Abstrike para o codex, mas a execução de agentes está desligada/);
+    assert.match(r.text, /Registrei a tarefa \w+ no Abstrike para o codex, mas quem executa tarefas é a outra janela/);
     const [task] = await mem.listTasks();
     assert.equal(task!.status, 'captured');
     assert.equal(task!.primaryAgent, 'codex');

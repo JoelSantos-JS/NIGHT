@@ -203,7 +203,11 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
       return { killed: true, detail: 'vai parar antes do agente começar' };
     }
     this.queue = this.queue.filter((id) => id !== taskId);
-    await this.setStatus(task, 'cancelled', 'cancelada antes de rodar', true);
+    // Esperando aprovação: o pedido de merge não pode ficar aberto depois de cancelar.
+    for (const a of await this.memory.listPendingApprovals()) {
+      if (a.taskId === taskId) await this.memory.decideApproval(a.id, 'rejected');
+    }
+    await this.setStatus(task, 'cancelled', task.status === 'awaiting-approval' ? 'cancelada; o pedido de merge foi recusado' : 'cancelada antes de rodar', true);
     if (task.worktreePath && task.branch && task.baseRef) await this.discardQuietly(task);
     return { killed: true, detail: 'não estava rodando; cancelei' };
   }

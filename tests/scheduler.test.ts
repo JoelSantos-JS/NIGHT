@@ -215,6 +215,42 @@ describe('execução de tarefas de código', () => {
     assert.equal(llm.calls.length, 0, 'nada disso passou pelo modelo local');
   });
 
+  test('cancelar tarefa que espera aprovação recusa o pedido de merge e apaga a worktree', async () => {
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') });
+    await newTask('t11', { reviewAgent: null });
+    await s.enqueue('t11');
+    await until(async () => (await status('t11')) === 'awaiting-approval');
+    await s.cancel('t11');
+    assert.equal(await status('t11'), 'cancelled');
+    assert.equal((await mem.listPendingApprovals()).length, 0);
+    assert.deepEqual(wts.discarded, ['agent/claude/t11']);
+    assert.deepEqual(wts.merged, []);
+  });
+
+  test('só uma instância pega a trava de executar tarefas', async () => {
+    const other = await PgMemory.open(TEST_URL);
+    try {
+      const unlock = await mem.acquireTaskLock();
+      assert.ok(unlock, 'a primeira pega');
+      assert.equal(await other.acquireTaskLock(), null, 'a segunda não');
+      await unlock!();
+      const again = await other.acquireTaskLock();
+      assert.ok(again, 'depois de soltar, a outra pega');
+      await again!();
+    } finally {
+      await other.close();
+    }
+  });
+
+  test('janela sem executor não "cancela de mentira" tarefa viva da outra', async () => {
+    await newTask('t12');
+    await mem.updateTaskStatus('t12', 'running', 'scheduler', 'rodando na outra janela');
+    const llm = new FakeLlm();
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm, []);
+    assert.match((await n.handle('cancela a tarefa do Night')).text, /está com a outra janela do Night/);
+    assert.equal(await status('t12'), 'running');
+  });
+
   test('"sem revisão" desliga o segundo agente', async () => {
     const llm = new FakeLlm();
     const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') });
