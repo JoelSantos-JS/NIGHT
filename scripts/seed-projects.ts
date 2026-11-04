@@ -8,7 +8,7 @@ const projects: Project[] = [
   { ...base, id: 'soaken', name: 'Soaken', description: 'App de idiomas com voz (código em Desktop/PROFESSOR/tutor-pc).' },
   { ...base, id: 'trading-signals', name: 'Sinais', description: 'Pesquisa/bot de sinais de entrada e saída em cripto; só backtest e paper trading.' },
   { ...base, id: 'social', name: 'Facebook', description: 'Páginas e conteúdo (ex.: K-dramas) para o público do Brasil.' },
-  { ...base, id: 'night', name: 'Night', description: 'Este assistente.' },
+  { ...base, id: 'night', name: 'Night', description: 'Este assistente.', repoPath: 'D:/NIGHT', defaultBranch: 'main' },
 ];
 
 const memory = await PgMemory.open();

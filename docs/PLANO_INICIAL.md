@@ -37,11 +37,11 @@
 | M1 | Contratos | Interfaces TS e esquema do Postgres fechados (ver §4), revisados pelo Codex | Claude escreve, Codex revisa |
 | M2 | Conversa por texto | Terminal → roteador → Qwen local → resposta, sem rede (provado por log) | Claude · ✅ 03/11 (`pnpm night`) |
 | M3 | Memória | “Salva essa ideia para o Abstrike” grava no Postgres; “quais ideias do Abstrike?” recupera; testes passam | Claude · ✅ 03/11 |
-| M4 | Worktree + tarefa (sem IA) | `WorktreeManager` cria `agent/<agente>/<id>` a partir de um commit base, mostra diff, rejeita (apaga só a worktree do agente) e aprova (merge só se não houver conflito). Testes provam que a worktree do Joel não muda | Codex |
-| M5 | Adaptadores Claude/Codex | Uma tarefa real roda numa worktree, grava eventos, o cancelamento mata o processo e o status vem do banco | Codex |
-| M6 | Voz | Push-to-talk → STT → Qwen → Kokoro, em EN e PT-BR; banco de testes com 10+10 frases do Joel | Claude |
+| M4 | Worktree + tarefa (sem IA) | `WorktreeManager` cria `agent/<agente>/<id>` a partir de um commit base, mostra diff, rejeita (apaga só a worktree do agente) e aprova (merge só se não houver conflito). Testes provam que a worktree do Joel não muda | Codex · ✅ 04/11 |
+| M5 | Adaptadores Claude/Codex | Uma tarefa real roda numa worktree, grava eventos, o cancelamento mata o processo e o status vem do banco | Claude · ✅ 04/11 (e2e real) |
+| M6 | Voz | Push-to-talk → STT → Qwen → Kokoro, em EN e PT-BR; banco de testes com 10+10 frases do Joel | Claude · ✅ 03–04/11 (automática por VAD; faltam as 10+10 frases do Joel) |
 | M7 | Juntar tudo | Os 5 passos da seção 15 do blueprint funcionam por voz | Claude integra, Codex revisa |
-| M8 | Revisão cruzada | Claude implementa, Codex revisa, no máximo 2 ciclos | Ambos |
+| M8 | Revisão cruzada | Claude implementa, Codex revisa, no máximo 2 ciclos | Ambos · ✅ 04/11 (o outro agente revisa cada tarefa) |
 
 M2–M3 (Claude) e M4–M5 (Codex) andam **em paralelo** depois do M1. O M6 pode começar junto, pois depende só do contrato de voz.
 

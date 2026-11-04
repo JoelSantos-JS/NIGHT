@@ -87,3 +87,16 @@ O `route_log` agora guarda a resposta (`reply`, migração 003). Ao reiniciar, o
 recente do banco, então lembra também do que o Codex e o Claude responderam.
 O bloco vai marcado como contexto, não instrução. O ai-memory do Akita (blueprint §18) pode substituir isto
 quando houver motivo; por enquanto o banco do Night basta e funciona no Windows.
+
+## D-011 — Execução de código: worktree por tarefa, outro agente revisa, merge só com "aprovo" (04/11/2026)
+- Worktrees (M4, feito pelo Codex): `src/workspaces/worktree-manager.ts`, em `D:/NIGHT-data/worktrees/<projeto>/<agente>-<tarefa>`,
+  branch `agent/<agente>/<tarefa>`. Conflito por `git merge-tree` (sem tocar em pasta). Merge recusa se a pasta
+  do dono tiver mudança não salva; nunca force/reset/checkout no repo do dono.
+- Agentes (M5): Claude Code (modelo padrão da conta) e Codex `gpt-6-astra`, dentro da worktree, sem push nem
+  internet. O OUTRO agente revisa por padrão, uma rodada, só leitura ("sem revisão" no pedido desliga).
+- Ciclo no banco: queued → planning → running → testing → review-ready → awaiting-approval → accepted / rejected
+  / failed / cancelled. Cancelar mata a árvore de processos. Reinício: o que estava rodando vira `failed`.
+- Por voz: "pede pro Claude/Codex … no <projeto>", "mostra as mudanças", "aprovo" / "descarta", "cancela".
+  Projeto precisa de pasta: "a pasta do <projeto> é C:\…" (melhor digitado).
+- Testado de verdade em 04/11 (`pnpm e2e:agentes claude|codex`): Claude fez + Codex revisou em 48 s; Codex fez +
+  Claude revisou em 45 s; pasta do dono intacta até o "aprovo"; merge no main com testes passando.
