@@ -25,16 +25,29 @@ FRAME = 512  # 32 ms: o tamanho que o Silero espera em 16 kHz
 CONTEXT = 64
 FRAME_S = FRAME / RATE
 
-START_PROB = 0.5
-START_FRAMES = 3
+# 04/11 no uso real: barulho de fundo disparava "fala" vazia. Começo exige voz mais clara e por ~0,16 s.
+START_PROB = float(os.environ.get("NIGHT_VAD_START", "0.6"))
+START_FRAMES = 5
 END_PROB = 0.35
 END_SILENCE_S = float(os.environ.get("NIGHT_END_SILENCE_S", "1.3"))
 PRE_ROLL_FRAMES = 10  # ~0,3 s
-MIN_SPEECH_S = 0.4
+MIN_SPEECH_S = 0.6
 MAX_UTTERANCE_S = 60.0
 # Barge-in: com o Night falando, precisa de voz mais clara e por mais tempo.
 BARGE_PROB = 0.8
 BARGE_FRAMES = 10  # ~0,3 s
+
+
+def input_device() -> int | None:
+    """NIGHT_MIC="Iriun" escolhe o microfone pelo nome (pedaço basta). Sem a variável, o padrão do Windows.
+    Fone Bluetooth com microfone ligado grava com qualidade de telefone; microfone com fio/webcam costuma ir melhor."""
+    want = os.environ.get("NIGHT_MIC", "").strip().lower()
+    if not want:
+        return None
+    for i, d in enumerate(sd.query_devices()):
+        if d["max_input_channels"] > 0 and want in d["name"].lower() and sd.query_hostapis(d["hostapi"])["name"] in ("MME", "Windows WASAPI"):
+            return i
+    raise RuntimeError(f'microfone "{want}" não encontrado; veja a lista com: python -m night_speech --mics')
 
 
 class StreamingVad:
@@ -89,7 +102,8 @@ class AutoListener:
         def on_audio(data, _frames, _time, status):
             self.frames.put(data[:, 0].copy())
 
-        self.stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32", blocksize=FRAME, callback=on_audio)
+        self.stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32", blocksize=FRAME, callback=on_audio,
+                                     device=input_device())
         self.stream.start()
         self.worker = threading.Thread(target=self._loop, daemon=True)
         self.worker.start()

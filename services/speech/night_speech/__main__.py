@@ -31,6 +31,7 @@ if os.environ.get("NIGHT_SPEECH_OFFLINE") == "1":
     os.environ["HF_HUB_OFFLINE"] = "1"
 
 import numpy as np
+from night_speech.auto import input_device
 import sounddevice as sd
 
 SAMPLE_RATE_IN = 16_000
@@ -55,12 +56,15 @@ MAX_NO_SPEECH = float(os.environ.get("NIGHT_STT_MAX_NO_SPEECH", "0.6"))
 THREADS = max(1, (os.cpu_count() or 2) // 2)
 
 _out_lock = threading.Lock()
+# O stdout é só do protocolo. Bibliotecas que dão print (spaCy, misaki...) vão parar no stderr.
+_protocol = sys.stdout
+sys.stdout = sys.stderr
 
 
 def send(msg: dict) -> None:
     with _out_lock:
-        sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        _protocol.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        _protocol.flush()
 
 
 def log(*args) -> None:
@@ -180,8 +184,18 @@ class Listener:
         # O prompt puxa o Whisper para o vocabulário dos comandos. Sem "pesquisar" aqui, ele ouvia "precisar"
         # (04/11: "você consegue pesquisar para mim?" virou "precisar" e o pedido não foi reconhecido).
         prompt = (WHISPER_PROMPT_EN if language == "en" else WHISPER_PROMPT_PT)
-        segments, _ = self.model.transcribe(audio, language=language, vad_filter=True, beam_size=5,
-                                            initial_prompt=prompt)
+        # Ruído forte: limpa antes. Só quando o fundo está alto — com ruído leve a limpeza piora palavras
+        # (medido 04/11: "seu" virou "ser"). Custa ~0,2 s.
+        denoised = False
+        snr = snr_db(audio)
+        if snr < DENOISE_BELOW_DB:
+            import noisereduce as nr
+            audio = nr.reduce_noise(y=audio, sr=SAMPLE_RATE_IN, stationary=False).astype(np.float32)
+            denoised = True
+        # Fala longa com beam 1: medido 04/11, 4,7 s × 7,3 s para 21 s de áudio, mesmo texto. Comando curto
+        # fica com beam 5 (é onde uma palavra errada muda o pedido).
+        segments, _ = self.model.transcribe(audio, language=language, vad_filter=True,
+                                            beam_size=5 if audio_s < 6.0 else 1, initial_prompt=prompt)
         segs = list(segments)
         text = " ".join(s.text.strip() for s in segs).strip()
         # Confiança: o Whisper "chuta" frase quando não entendeu (ruído, fala baixa, microfone Bluetooth ruim).
@@ -194,10 +208,22 @@ class Listener:
         min_logprob = MIN_AVG_LOGPROB if audio_s < 4.0 else MIN_AVG_LOGPROB_LONG
         # "Não é fala" só conta junto com confiança baixa: em fala longa o no_speech de um trecho pode subir à toa.
         unsure = avg_logprob < min_logprob or (no_speech > MAX_NO_SPEECH and avg_logprob < -0.5)
-        return {"text": "" if unsure else text, "doubt": text if unsure else None,
+        return {"text": "" if unsure else text, "doubt": text if unsure else None, "snr_db": round(snr, 1), "denoised": denoised,
                 "confidence": round(avg_logprob, 2), "no_speech": round(no_speech, 2),
                 "language": "en" if language == "en" else "pt-BR", "audio_s": round(audio_s, 2),
                 "ms": round((time.perf_counter() - t) * 1000)}
+
+
+DENOISE_BELOW_DB = float(os.environ.get("NIGHT_DENOISE_BELOW_DB", "12"))
+
+
+def snr_db(audio: np.ndarray) -> float:
+    """Voz × fundo da própria gravação: energia dos trechos altos × dos baixos (quadros de 32 ms)."""
+    n = len(audio) // 512
+    if n < 10:
+        return 99.0
+    rms = np.sqrt(np.mean(audio[: n * 512].reshape(n, 512) ** 2, axis=1)) + 1e-9
+    return float(20 * np.log10(np.percentile(rms, 90) / np.percentile(rms, 10)))
 
 
 def load_wav_16k(path: str) -> np.ndarray:
@@ -213,11 +239,17 @@ def load_wav_16k(path: str) -> np.ndarray:
 
 
 def main() -> None:
+    if "--mics" in sys.argv:
+        for i, d in enumerate(sd.query_devices()):
+            api = sd.query_hostapis(d["hostapi"])["name"]
+            if d["max_input_channels"] > 0 and api in ("MME", "Windows WASAPI"):
+                _protocol.write(f"{i:3d}  {d['name']}  ({api})\n")
+        return
     t = time.perf_counter()
     speaker = Speaker()
     listener = Listener()
     send({"type": "ready", "load_ms": round((time.perf_counter() - t) * 1000), "voices": VOICES,
-          "whisper": listener.model_name, "input": sd.query_devices(kind="input")["name"],
+          "whisper": listener.model_name, "input": sd.query_devices(input_device() if input_device() is not None else sd.default.device[0])["name"],
           "output": sd.query_devices(kind="output")["name"]})
 
     # Fala numa thread própria: "stop" e "listen_start" precisam funcionar enquanto ela fala.

@@ -44,7 +44,8 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const SAVE_IDEA = /\b(salva|salve|salvar|guarda|guarde|anota|anote|registra|registre)\b.{0,20}\bideia\b|\b(save|note|record|jot down)\b.{0,15}\bidea\b|\bnova ideia\b|\bideia nova\b|\bnew idea\b/;
 const FIND_IDEAS = /\b(quais|mostra|mostre|lista|liste|lembra|busca|procura)\b.{0,25}\bideias?\b|\b(list|show|find|what|which|recall)\b.{0,20}\bideas\b|\bminhas ideias\b|\bmy ideas\b/;
-const STATUS = /\b(ta|esta|ainda|ja) (pesquisando|precisando)\b|\b(ja )?(achou|terminou a pesquisa)\b|\bstill (searching|looking)\b|\bo que (voce )?(esta|ta) (fazendo|rodando)\b|\b(o que|que) (esta|ta) rodando\b|\bwhat('?s| is| are)( you)? (running|doing|working on)\b|\bstatus\b|\bcomo (esta|ta|anda|vai) (a |o )?(tarefa|trabalho|experimento)\b|\bhow is\b.{0,40}\b(task|going)\b|\bprogress\b|\bandamento\b/;
+// "Achou" sozinho não: "o que o pessoal achou" virava status (uso real 04/11). Só "já achou?" / "achou?" curto.
+const STATUS = /\b(ta|esta|ainda|ja) (pesquisando|precisando)\b|\bja (achou|terminou)\b|^achou\b|\bterminou a pesquisa\b|\bstill (searching|looking)\b|\bo que (voce )?(esta|ta) (fazendo|rodando)\b|\b(o que|que) (esta|ta) rodando\b|\bwhat('?s| is| are)( you)? (running|doing|working on)\b|\bstatus\b|\bcomo (esta|ta|anda|vai) (a |o )?(tarefa|trabalho|experimento)\b|\bhow is\b.{0,40}\b(task|going)\b|\bprogress\b|\bandamento\b/;
 const STOP_SPEAKING = /^(para|pare|parar) de falar\b|^(stop|quit) talking\b|^silencio\b|^(shut up|be quiet|quiet)\b|^chega\b/;
 // Cancelar só como ORDEM, no começo da frase: "cancela a tarefa", "para todos os agentes", "stop the task".
 // "Como cancelar a tarefa?" é pergunta e não pode matar nada (2ª revisão do Codex, 04/11).
@@ -66,7 +67,8 @@ const DELEGATE = /\b(pede|peca|pedir|manda|mande|fala|diz)\b.{0,6}\b(pro|para o|
 const RESEARCH = new RegExp([
   /\b(pesquisa|pesquise|pesquisar|procura|procure|busca|busque|googla|googlar)\b.{0,30}\b(internet|web|google|sobre|pra mim|para mim)\b/.source,
   // "pesquisa" em qualquer lugar, com algo depois ("você consegue pesquisar o preço…", "faz uma pesquisa sobre…")
-  /\b(pesquisa|pesquise|pesquisar|faz uma pesquisa|fazer uma pesquisa)\b\s+\S+/.source,
+  // Pontuação no meio vale: "eu quero que você pesquise, não pesquise, traz os comentários" (uso real 04/11).
+  /\b(pesquisa|pesquise|pesquisar|faz uma pesquisa|fazer uma pesquisa)\b[,.;:]?\s+\S+/.source,
   // O Whisper troca "pesquisar" por "precisar": "você consegue precisar pra mim?" não existe em português.
   /\b(consegue|pode|poderia|da pra) (precisar|pesquisar|procurar)\b|\bprecis(ar|a) (isso )?(pra|para) mim\b/.source,
   /^(pesquisa|pesquise|search|look up|research|google)\b/.source,

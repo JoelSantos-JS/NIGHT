@@ -90,7 +90,8 @@ function onUtterance(heard: Transcript) {
     console.log(`${DIM}(não entendi direito, confiança ${heard.confidence ?? '?'}: "${heard.doubt}" — fala de novo, mais perto do microfone)${RESET}`);
     return;
   }
-  if (!text || HALLUCINATIONS.some((re) => re.test(n))) {
+  if (!text) return; // barulho que não virou palavra: nem mostra
+  if (HALLUCINATIONS.some((re) => re.test(n))) {
     console.log(`${DIM}(ignorado: "${text}")${RESET}`);
     return;
   }
@@ -98,7 +99,7 @@ function onUtterance(heard: Transcript) {
     console.log(`${DIM}(ignorado, era a minha própria voz: "${text}")${RESET}`);
     return;
   }
-  console.log(`\nvocê › ${text}  ${DIM}[${heard.language} · ${heard.audioSeconds.toFixed(1)} s · transcrito em ${(heard.ms / 1000).toFixed(1)} s · confiança ${heard.confidence ?? '?'}]${RESET}`);
+  console.log(`\nvocê › ${text}  ${DIM}[${heard.language} · ${heard.audioSeconds.toFixed(1)} s · transcrito em ${(heard.ms / 1000).toFixed(1)} s · confiança ${heard.confidence ?? '?'}${heard.denoised ? ' · limpei ruído' : ''}]${RESET}`);
   enqueue(() => respond(text, heard.language));
 }
 

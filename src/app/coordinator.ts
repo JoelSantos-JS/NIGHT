@@ -30,6 +30,8 @@ export interface Reply {
 }
 
 const HISTORY_TURNS = 6;
+const FOLLOW_UP_MS = 3 * 60_000;
+const FOLLOW_UP = /\b(traz|traga|trazer|mostra|mostre|me fala|fala mais|conta mais|me conta|detalha|detalhe|lista|liste|quais|qual foi|e os|e as|mais sobre|comentarios?|opinioes|opiniao|resenhas?|onde|quando|quem|quanto|bring|show me|tell me more|more about|what about|which|comments|reviews)\b/;
 const QWEN_HISTORY_TURNS = 3;
 
 const SYSTEM_PROMPT: Record<Language, string> = {
@@ -107,6 +109,9 @@ export class NightCoordinator {
     private readonly folderSearch: (spoken: string) => FolderHit[] = (s) => findFolders(s),
   ) {}
 
+  /** Quando a última pesquisa terminou (para reconhecer continuação). */
+  private lastResearchAt = 0;
+
   /** Rodar projeto espera o "pode": é uma ação no PC do Joel. */
   private pendingRun: { plan: RunPlan; title: string; at: number } | null = null;
 
@@ -141,14 +146,19 @@ export class NightCoordinator {
       }
     }
 
-    const decision = await this.router.route(text, language);
+    let decision = await this.router.route(text, language);
+    // Continuação de pesquisa: logo depois de uma, "traz os comentários", "me fala mais", "quais foram..." é
+    // pedido de MAIS pesquisa, não conversa (uso real 04/11: caiu no Luna, que sem internet disse que não dava).
+    if (decision.intent.kind === 'chat' && Date.now() - this.lastResearchAt < FOLLOW_UP_MS && FOLLOW_UP.test(normalize(text))) {
+      decision = { intent: { kind: 'research', query: text.trim() }, model: 'rules', reason: 'continuação da pesquisa anterior', usedPremiumQuota: false };
+    }
     const { intent } = decision;
     if (intent.kind === 'research') {
       // O route_log desta vai depois, com o modelo que de fato respondeu e o uso de cota.
       const started = Date.now();
       this.researching.set(intent.query, started);
       const followUp = this.research(intent.query, language, decision.reason)
-        .finally(() => this.researching.delete(intent.query));
+        .finally(() => { this.researching.delete(intent.query); this.lastResearchAt = Date.now(); });
       return { ...this.finish(text, language, say(language, 'Vou pesquisar isso, já te falo.', "I'll look that up, back in a moment."), 'research', 'rules'), followUp };
     }
     let out: string;

@@ -9,4 +9,5 @@ dependencies = [
   "sounddevice>=0.5",
   "soundfile>=0.12",
   "numpy",
+  "noisereduce>=3",
 ]

@@ -33,6 +33,8 @@ export interface Transcript {
   doubt?: string | null;
   /** Confiança média do Whisper (log-prob; 0 é certeza, abaixo de -1 é duvidoso). */
   confidence?: number;
+  /** O áudio tinha ruído forte e foi limpo antes de transcrever. */
+  denoised?: boolean;
 }
 
 /** Aperta-e-fala (blueprint §6): o microfone só abre entre startListening e stopListening. */
