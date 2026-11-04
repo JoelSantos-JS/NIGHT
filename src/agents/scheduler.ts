@@ -35,6 +35,8 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
   private busy = false;
   private runs = new Map<string, { run: AgentRun; agent: CodingAgent }>();
   private cancelRequested = new Set<string>();
+  /** Revisões em andamento: cancelar ou fechar o Night mata o revisor também (2ª revisão do Codex). */
+  private reviews = new Map<string, AbortController>();
 
   constructor(
     private readonly memory: Memory,
@@ -127,7 +129,13 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
     if (reviewer) {
       try {
         const ctx = await buildSharedContext(this.memory, `${reviewer.name}:revisão`, this.language);
-        review = await reviewer.review(wt, reviewPrompt(task, wt, task.primaryAgent, outcome.summary, diffStat(diff), ctx));
+        const abort = new AbortController();
+        this.reviews.set(task.id, abort);
+        try {
+          review = await reviewer.review(wt, reviewPrompt(task, wt, task.primaryAgent, outcome.summary, diffStat(diff), ctx), abort.signal);
+        } finally {
+          this.reviews.delete(task.id);
+        }
         await this.event(task, 'agent-output', reviewer.name, `revisão: ${review.slice(0, 4000)}`);
       } catch (err) {
         review = `(a revisão do ${reviewer.name} falhou: ${(err as Error).message.slice(0, 150)})`;
@@ -150,13 +158,16 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
       !conflicts.clean && `conflito em: ${conflicts.conflicts.join(', ')}`,
     ].filter(Boolean).join('\n\n');
     task = await this.memory.updateTask(task.id, { resultSummary: summary });
-    if (this.cancelRequested.has(task.id)) return this.cancelled(task, wt, 'cancelada antes de pedir aprovação');
-    task = await this.setStatus(task, 'review-ready', 'pronta para revisão');
-    await this.requestMergeApproval(task, wt, project.defaultBranch);
     const verdict = /VEREDITO:\s*corrigir/i.test(review) ? `O ${reviewer!.name} revisou e pediu correção.` : review ? `O ${reviewer!.name} revisou e aprovou.` : '';
-    await this.setStatus(task, 'awaiting-approval',
-      `A tarefa ${task.id} terminou: ${diff.changedFiles.length} arquivo${diff.changedFiles.length > 1 ? 's' : ''} mudado${diff.changedFiles.length > 1 ? 's' : ''}. ${verdict} ${conflicts.clean ? '' : 'Tem conflito com o branch principal. '}Quer aprovar ou descartar?`.replace(/\s+/g, ' ').trim(),
-      true);
+    // Abrir a aprovação é atômico em relação a cancel/approve/reject da mesma tarefa (2ª revisão do Codex).
+    await this.exclusive(task.id, async () => {
+      if (this.cancelRequested.has(task.id)) return this.cancelled(task, wt, 'cancelada antes de pedir aprovação');
+      task = await this.setStatus(task, 'review-ready', 'pronta para revisão');
+      await this.requestMergeApproval(task, wt, project.defaultBranch);
+      await this.setStatus(task, 'awaiting-approval',
+        `A tarefa ${task.id} terminou: ${diff.changedFiles.length} arquivo${diff.changedFiles.length > 1 ? 's' : ''} mudado${diff.changedFiles.length > 1 ? 's' : ''}. ${verdict} ${conflicts.clean ? '' : 'Tem conflito com o branch principal. '}Quer aprovar ou descartar?`.replace(/\s+/g, ' ').trim(),
+        true);
+    });
   }
 
   /** Aprova: faz o merge (só se não tiver conflito e a pasta do dono estiver limpa). */
@@ -166,10 +177,10 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
       // O que vai entrar tem que ser exatamente o que foi mostrado e revisado.
       const now = fingerprint((await this.worktrees.diff(wt)).patch);
       if (!approval.scope.endsWith(`#${now}`)) {
+        // Não abre pedido novo: o código novo não foi revisado por ninguém (2ª revisão do Codex, 04/11).
         await this.memory.decideApproval(approval.id, 'rejected');
-        await this.event(task, 'error', 'scheduler', 'a worktree mudou depois da revisão; merge recusado');
-        await this.requestMergeApproval(task, wt, project.defaultBranch);
-        return { ok: false, message: `Não fiz o merge: a tarefa ${task.id} mudou depois que foi revisada. Peça "mostra as mudanças" e aprove de novo se estiver certo.` };
+        await this.fail(task, 'a worktree mudou depois da revisão; recusei o merge. A worktree ficou para você conferir; peça a tarefa de novo se quiser', wt);
+        return { ok: false, message: `Não fiz o merge: a tarefa ${task.id} mudou depois que foi revisada, então ninguém revisou o que está lá agora. Marquei como falha; peça de novo se quiser.` };
       }
       const decided = await this.memory.decideApproval(approval.id, 'approved');
       const r = await this.worktrees.merge(project, wt, decided);
@@ -239,6 +250,10 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
       this.cancelRequested.add(taskId);
       await agent.cancel(run).catch(() => {});
     }
+    for (const [taskId, abort] of this.reviews) {
+      this.cancelRequested.add(taskId);
+      abort.abort();
+    }
     const deadline = new Promise((r) => setTimeout(r, timeoutMs));
     await Promise.race([Promise.all(live.map(([, { run }]) => run.done.catch(() => {}))), deadline]);
     // Dá tempo do execute() gravar o "cancelled" antes de o banco fechar.
@@ -267,7 +282,12 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
     if (RUNNING.includes(task.status)) {
       // Criando a worktree ou na revisão: o execute() confere o pedido no próximo passo e para.
       this.cancelRequested.add(taskId);
-      return { killed: true, detail: task.status === 'testing' ? 'para assim que a revisão terminar, sem pedir aprovação' : 'para antes do agente começar' };
+      const review = this.reviews.get(taskId);
+      if (review) {
+        review.abort(); // mata o processo do revisor agora
+        return { killed: true, detail: 'revisor encerrado; a tarefa não vai pedir aprovação' };
+      }
+      return { killed: true, detail: 'para antes do agente começar' };
     }
     this.queue = this.queue.filter((id) => id !== taskId);
     // Esperando aprovação: o pedido de merge não pode ficar aberto depois de cancelar.

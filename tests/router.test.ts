@@ -84,6 +84,15 @@ describe('regras do roteador', () => {
     }
   });
 
+  test('pergunta nunca vira cancelar/aprovar (2ª revisão do Codex)', () => {
+    for (const t of ['Como cancelar a tarefa do Night?', 'como cancela a tarefa', 'dá pra cancelar a tarefa?', 'How do I cancel the task?', 'aprovo?', 'e se eu cancelar a tarefa?', 'why stop the task']) {
+      assert.ok(!['cancel', 'approval'].includes(kind(t) ?? ''), t);
+    }
+    for (const t of ['por favor cancela a tarefa do Night', 'pode cancelar a tarefa', 'please cancel the task']) {
+      assert.equal(kind(t), 'cancel', t);
+    }
+  });
+
   test('"cancela" dentro de uma ideia não cancela nada', () => {
     assert.equal(kind('salva essa ideia: botão para cancelar tarefa pelo celular'), 'save-idea');
   });

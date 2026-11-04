@@ -108,7 +108,8 @@ abstract class CliCodingAgent implements CodingAgent {
 /** Revisão pelo OUTRO agente: só lê a worktree, não muda nada. Uma rodada (blueprint §8: sem loop infinito). */
 export interface Reviewer {
   readonly name: AgentName;
-  review(worktree: Worktree, prompt: string): Promise<string>;
+  /** signal: cancelar a tarefa ou fechar o Night mata o processo do revisor também. */
+  review(worktree: Worktree, prompt: string, signal?: AbortSignal): Promise<string>;
 }
 
 export function reviewPrompt(task: Task, worktree: Worktree, author: AgentName, authorSummary: string, diffStat: string, context: string): string {
@@ -132,30 +133,32 @@ ${context}
 </contexto_night>`;
 }
 
-function runCollect(bin: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runCollect(bin: string, args: string[], cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(bin, args, { cwd, env: agentEnv(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const onAbort = () => { if (child.pid) killTree(child.pid); };
+    if (signal?.aborted) onAbort(); else signal?.addEventListener('abort', onAbort, { once: true });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
     child.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-4000); });
     const timer = setTimeout(() => { if (child.pid) killTree(child.pid); }, timeoutMs);
     child.on('error', (e) => { clearTimeout(timer); resolve({ code: null, stdout, stderr: stderr + String(e) }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+    child.on('close', (code) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); resolve({ code, stdout, stderr }); });
   });
 }
 
 export class ClaudeReviewer implements Reviewer {
   readonly name = 'claude' as const;
   constructor(private readonly bin = findClaudeBin(), private readonly timeoutMs = 15 * 60_000) {}
-  async review(worktree: Worktree, prompt: string): Promise<string> {
+  async review(worktree: Worktree, prompt: string, signal?: AbortSignal): Promise<string> {
     const r = await runCollect(this.bin, [
       // --tools define o que EXISTE na sessão; --allowedTools só pré-aprova (revisão do Codex, 04/11).
       '-p', prompt, '--tools', 'Read,Glob,Grep,Bash', '--allowedTools', 'Read', 'Glob', 'Grep', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git status:*)',
       'Bash(pnpm test:*)', 'Bash(npm test:*)', 'Bash(node --test:*)',
       '--disallowedTools', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch',
       '--output-format', 'json', '--no-session-persistence',
-    ], worktree.path, this.timeoutMs);
+    ], worktree.path, this.timeoutMs, signal);
     try {
       const parsed = JSON.parse(r.stdout) as { result?: string; is_error?: boolean };
       if (parsed.result && !parsed.is_error) return parsed.result.trim();
@@ -167,7 +170,7 @@ export class ClaudeReviewer implements Reviewer {
 export class CodexReviewer implements Reviewer {
   readonly name = 'codex' as const;
   constructor(private readonly bin = findCodexBin(), private readonly model = process.env.NIGHT_CODE_CODEX_MODEL ?? 'gpt-6-astra', private readonly timeoutMs = 15 * 60_000) {}
-  async review(worktree: Worktree, prompt: string): Promise<string> {
+  async review(worktree: Worktree, prompt: string, signal?: AbortSignal): Promise<string> {
     if (!this.bin) throw new Error('Codex não encontrado');
     const scratch = mkdtempSync(path.join(tmpdir(), 'night-review-'));
     const out = path.join(scratch, 'review.txt');
@@ -175,7 +178,7 @@ export class CodexReviewer implements Reviewer {
       const r = await runCollect(this.bin, [
         'exec', '--model', this.model, '-c', 'model_reasoning_effort="medium"',
         '--sandbox', 'read-only', '--ephemeral', '-C', worktree.path, '-o', out, prompt,
-      ], worktree.path, this.timeoutMs);
+      ], worktree.path, this.timeoutMs, signal);
       const text = existsSync(out) ? readFileSync(out, 'utf8').trim() : '';
       if (text) return text;
       throw new Error(`revisão do Codex falhou (código ${r.code}): ${(r.stderr || r.stdout).slice(-300)}`);

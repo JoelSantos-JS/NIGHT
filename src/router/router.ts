@@ -46,7 +46,11 @@ const SAVE_IDEA = /\b(salva|salve|salvar|guarda|guarde|anota|anote|registra|regi
 const FIND_IDEAS = /\b(quais|mostra|mostre|lista|liste|lembra|busca|procura)\b.{0,25}\bideias?\b|\b(list|show|find|what|which|recall)\b.{0,20}\bideas\b|\bminhas ideias\b|\bmy ideas\b/;
 const STATUS = /\bo que (voce )?(esta|ta) (fazendo|rodando)\b|\b(o que|que) (esta|ta) rodando\b|\bwhat('?s| is| are)( you)? (running|doing|working on)\b|\bstatus\b|\bcomo (esta|ta|anda|vai) (a |o )?(tarefa|trabalho|experimento)\b|\bhow is\b.{0,40}\b(task|going)\b|\bprogress\b|\bandamento\b/;
 const STOP_SPEAKING = /^(para|pare|parar) de falar\b|^(stop|quit) talking\b|^silencio\b|^(shut up|be quiet|quiet)\b|^chega\b/;
-const CANCEL = /\b(cancela|cancele|cancelar|interrompe|interrompa|para|pare|parar|mata)\b.{0,40}\b(tarefa|task|agentes?|tudo)\b|\b(cancel|stop|kill|abort)\b.{0,40}\b(task|agents?|everything|job)\b/;
+// Cancelar só como ORDEM, no começo da frase: "cancela a tarefa", "para todos os agentes", "stop the task".
+// "Como cancelar a tarefa?" é pergunta e não pode matar nada (2ª revisão do Codex, 04/11).
+const CANCEL = /^(por favor |pode |agora |ok |entao )?(cancela|cancele|cancelar|interrompe|interrompa|interromper|para|pare|parar|mata)\b.{0,40}\b(tarefa|task|agentes?|tudo)\b|^(please |now |ok )?(cancel|stop|kill|abort)\b.{0,40}\b(task|agents?|everything|job)\b/;
+// Pergunta não é comando de controle.
+const QUESTION = /\?\s*$|^(como|por que|porque|pra que|quando|onde|da pra|e se|sera que|how|why|when|where|what if|can i|could i|should i)\b/;
 // Aprovar/rejeitar só com a frase INTEIRA no formato esperado: "aprovo", "aprovo o merge", "aprovo a do Night",
 // "approve it". "Aprovo a ideia" ou "aprova esse texto" não podem virar merge (revisão do Codex, 04/11).
 const DECISION_TAIL = /( (o |a |as |os |the )?(merge|tarefa|task|mudancas?|alteracoes|changes?|isso|it|tudo|everything))?( ((a|o) )?(do|da|no|na|de|for|in|on) (projeto |project )?[\w-]+)?[.!]?$/.source;
@@ -99,7 +103,7 @@ export function ruleIntent(rawText: string, projectNames: string[]): Intent | nu
   const project = projectIn(n, projectNames);
 
   if (STOP_SPEAKING.test(n)) return { kind: 'stop-speaking' };
-  const negated = NEGATED.test(n);
+  const negated = NEGATED.test(n) || QUESTION.test(n);
   if (!negated && APPROVE.test(n)) return { kind: 'approval', decision: 'approve', taskHint: project };
   if (!negated && REJECT.test(n)) return { kind: 'approval', decision: 'reject', taskHint: project };
   if (!negated && CANCEL.test(n) && !SAVE_IDEA.test(n)) return { kind: 'cancel', taskHint: project ?? (/\b(tudo|todos|all|everything)\b/.test(n) ? 'all' : null) };

@@ -100,3 +100,19 @@ quando houver motivo; por enquanto o banco do Night basta e funciona no Windows.
   Projeto precisa de pasta: "a pasta do <projeto> é C:\…" (melhor digitado).
 - Testado de verdade em 04/11 (`pnpm e2e:agentes claude|codex`): Claude fez + Codex revisou em 48 s; Codex fez +
   Claude revisou em 45 s; pasta do dono intacta até o "aprovo"; merge no main com testes passando.
+
+## D-012 — Endurecimento depois de duas revisões do Codex (04/11/2026)
+1ª rodada: 11 achados (6 graves), todos corrigidos. 2ª rodada, só sobre as correções: 4 achados, todos corrigidos.
+Regras que ficaram:
+- Controle (aprovar, rejeitar, cancelar) só por ordem explícita: frase inteira no formato esperado, sem negação e
+  sem ser pergunta ("como cancelar a tarefa?" não cancela).
+- Os agentes recebem ambiente mínimo (`src/agents/env.ts`): nunca `*_API_KEY`, tokens, senhas ou URL do banco —
+  uma ANTHROPIC_API_KEY herdada faria o Claude cobrar por API.
+- Claude com `--tools` (o que existe na sessão), além de `--allowedTools` (o que é pré-aprovado).
+- Merge só do diff que foi revisado: a impressão digital (sha256 do patch) vai no pedido de aprovação; se mudou,
+  a tarefa falha e nada novo fica esperando aprovação sem revisão.
+- Abrir aprovação, aprovar, rejeitar e cancelar a mesma tarefa: um de cada vez.
+- Cancelar ou fechar o Night mata o agente E o revisor antes de soltar a trava de instância única.
+Limite conhecido: os testes que os agentes rodam executam código da própria worktree sem sandbox do sistema
+(no Windows o Claude Code não tem sandbox de SO; o Codex roda com o dele). Mitigação: ambiente sem segredos e
+worktree fora do repo do dono. Isolamento de verdade (WSL2/VM) fica para depois (blueprint §18 D).

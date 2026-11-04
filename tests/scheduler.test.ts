@@ -272,8 +272,37 @@ describe('execução de tarefas de código', () => {
     assert.equal(r.ok, false);
     assert.match(r.message, /mudou depois que foi revisada/);
     assert.deepEqual(wts.merged, []);
-    assert.equal(await status('t14'), 'awaiting-approval');
-    assert.match((await s.approve('t14')).message, /juntei/, 'o pedido novo vale para o diff atual');
+    assert.equal(await status('t14'), 'failed', 'nada não revisado fica esperando aprovação (2ª revisão do Codex)');
+    assert.equal((await mem.listPendingApprovals()).length, 0);
+    await assert.rejects(s.approve('t14'), /não está esperando aprovação/);
+  });
+
+  test('cancelar e fechar o Night matam o revisor também (2ª revisão do Codex)', async () => {
+    const aborted: string[] = [];
+    let reviewing = 0;
+    // Revisor que só termina quando é interrompido.
+    const hanging: Reviewer = {
+      name: 'codex',
+      review: (_wt, _p, signal) => new Promise((_, reject) => {
+        reviewing++;
+        signal?.addEventListener('abort', () => { aborted.push('abort'); reject(new Error('revisor encerrado')); });
+      }),
+    };
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') }, { codex: hanging });
+    await newTask('t18');
+    await s.enqueue('t18');
+    await until(async () => reviewing === 1);
+    const r = await s.cancel('t18');
+    assert.match(r.detail, /revisor encerrado/);
+    await until(async () => (await status('t18')) === 'cancelled');
+    assert.equal((await mem.listPendingApprovals()).length, 0);
+
+    await newTask('t19');
+    await s.enqueue('t19');
+    await until(async () => reviewing === 2);
+    await s.shutdown(2000);
+    assert.equal(await status('t19'), 'cancelled');
+    assert.equal(aborted.length, 2);
   });
 
   test('cancelar durante a revisão para sem pedir aprovação (revisão do Codex)', async () => {
