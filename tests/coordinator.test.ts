@@ -8,7 +8,7 @@ import { NightRouter } from '../src/router/router.ts';
 import { FakeLlm, resetTestDb, TEST_URL, truncateAll } from './helpers.ts';
 
 const project = (id: string, name: string): Project => ({
-  id, name, description: '', repoPath: null, defaultBranch: null, allowedPaths: [], status: 'active',
+  id, name, description: '', repoPath: `C:/repos/${id}`, defaultBranch: 'main', allowedPaths: [], status: 'active',
 });
 
 describe('forSpeech', () => {
@@ -93,8 +93,7 @@ describe('NightCoordinator', () => {
   test('teste 4 do blueprint: pedido de código vira tarefa, o modelo local não escreve código', async () => {
     const r = await night.handle('Pede pro Codex escrever um parser no Abstrike');
     assert.equal(r.intent, 'coding-task');
-    assert.match(r.text, /Registrei a tarefa \w+ no Abstrike para o codex/);
-    assert.match(r.text, /Ainda não consigo rodar agentes/);
+    assert.match(r.text, /Registrei a tarefa \w+ no Abstrike para o codex, mas a execução de agentes está desligada/);
     const [task] = await mem.listTasks();
     assert.equal(task!.status, 'captured');
     assert.equal(task!.primaryAgent, 'codex');

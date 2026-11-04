@@ -55,6 +55,10 @@ export type Intent =
   | { kind: 'coding-task'; projectHint: string | null; objective: string; agent: AgentName | null }
   /** Fato atual ou pesquisa: vai para um modelo menor do Codex/Claude com busca na internet (D-009). */
   | { kind: 'research'; query: string }
+  /** "Mostra as mudanças" (blueprint §6). */
+  | { kind: 'show-diff'; taskHint: string | null }
+  /** "A pasta do projeto X é C:\..." — liga o projeto a um repositório. */
+  | { kind: 'set-project-path'; projectHint: string | null; path: string }
   | { kind: 'approval'; decision: 'approve' | 'reject'; taskHint: string | null }
   | { kind: 'cancel'; taskHint: string | null }
   | { kind: 'stop-speaking' };

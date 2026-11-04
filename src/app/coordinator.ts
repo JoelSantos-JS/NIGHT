@@ -3,7 +3,7 @@
 // Regras do blueprint que moram aqui:
 // - "Salvei" só depois que o banco confirmou (§6).
 // - Status vem do banco, nunca do modelo (§8).
-// - Tarefa de código não é executada pelo modelo local (§12, teste 4): vira tarefa registrada.
+// - Tarefa de código nunca é feita pelo modelo local (§12, teste 4): vai para o Claude/Codex numa worktree.
 // - Nada é aprovado/cancelado por palpite do modelo: esses intents só vêm das regras do roteador.
 
 import { randomUUID } from 'node:crypto';
@@ -13,6 +13,7 @@ import { FINAL_TASK_STATUSES } from '../core/types.ts';
 import type { ResearchAgent } from '../agents/research.ts';
 import { QuotaError } from '../agents/research.ts';
 import { buildSharedContext } from '../agents/shared-context.ts';
+import { diffStat, otherAgent, type TaskScheduler } from '../agents/scheduler.ts';
 import { detectLanguage } from '../router/router.ts';
 
 export interface Reply {
@@ -22,6 +23,8 @@ export interface Reply {
   model: string;
   /** Resposta que chega depois (pesquisa): quem chamou fala/mostra quando resolver. */
   followUp?: Promise<Reply>;
+  /** Texto longo para a tela, não para a voz (ex.: o diff). */
+  detail?: string;
 }
 
 const HISTORY_TURNS = 6;
@@ -72,6 +75,8 @@ export class NightCoordinator {
     private readonly llm: LocalLlm,
     /** Em ordem de preferência; o próximo só entra se o anterior falhar ou estiver no limite. */
     private readonly researchers: ResearchAgent[] = [],
+    /** Executor das tarefas de código; sem ele, pedido de código só fica registrado. */
+    private readonly tasks?: TaskScheduler,
   ) {}
 
   async handle(text: string, languageOverride?: Language): Promise<Reply> {
@@ -92,6 +97,7 @@ export class NightCoordinator {
       return { ...this.finish(text, language, say(language, 'Vou pesquisar isso, já te falo.', "I'll look that up, back in a moment."), 'research', 'rules'), followUp };
     }
     let out: string;
+    let detail: string | undefined;
     switch (intent.kind) {
       case 'chat': out = await this.chat(text, language); break;
       case 'save-idea': out = await this.handleSaveIdea(intent, language); break;
@@ -100,11 +106,13 @@ export class NightCoordinator {
       case 'coding-task': out = await this.codingTask(intent, language); break;
       case 'cancel': out = await this.cancel(intent, language); break;
       case 'approval': out = await this.approval(intent, language); break;
+      case 'set-project-path': out = await this.setProjectPath(intent, language); break;
+      case 'show-diff': ({ text: out, detail } = await this.showDiff(intent, language)); break;
       case 'stop-speaking': out = ''; break;
     }
     // Grava depois de agir, com a resposta: é isso que os outros agentes vão ver no contexto.
     await this.memory.logRoute({ text, language, decision, reply: out });
-    return this.finish(text, language, out, intent.kind, decision.model);
+    return { ...this.finish(text, language, out, intent.kind, decision.model), ...(detail ? { detail } : {}) };
   }
 
   private restored = false;
@@ -237,36 +245,111 @@ export class NightCoordinator {
       return say(language, `Para qual projeto? ${names ? `Tenho: ${names}.` : 'Ainda não tem projeto cadastrado.'}`,
         `Which project? ${names ? `I have: ${names}.` : 'No projects registered yet.'}`);
     }
+    if (!project.repoPath) {
+      return say(language,
+        `O ${project.name} ainda não tem pasta cadastrada. Digite: a pasta do ${project.name} é C:\\caminho\\do\\repositório.`,
+        `${project.name} has no folder yet. Type: the folder for ${project.name} is C:\\path\\to\\repo.`);
+    }
     const agent = intent.agent ?? 'claude';
+    // Colaboração (blueprint §8): o outro agente revisa, a não ser que o dono peça sem revisão.
+    const noReview = /\bsem revis[aã]o\b|\bwithout review\b|\bno review\b/i.test(intent.objective);
     const task = await this.memory.createTask({
       id: randomUUID().slice(0, 8), projectId: project.id, objective: intent.objective, scope: '',
-      status: 'captured', primaryAgent: agent, reviewAgent: null, worktreePath: null, branch: null,
-      baseRef: null, resultSummary: null, approvalState: 'none',
+      status: this.tasks ? 'queued' : 'captured', primaryAgent: agent, reviewAgent: noReview ? null : otherAgent(agent),
+      worktreePath: null, branch: null, baseRef: null, resultSummary: null, approvalState: 'none',
     });
-    // Os adaptadores dos agentes (M5) ainda não existem: a tarefa fica registrada, sem executar.
+    if (!this.tasks) {
+      return say(language, `Registrei a tarefa ${task.id} no ${project.name} para o ${agent}, mas a execução de agentes está desligada.`,
+        `I registered task ${task.id} in ${project.name} for ${agent}, but agent execution is off.`);
+    }
+    await this.tasks.enqueue(task.id);
+    const reviewer = task.reviewAgent ? say(language, `, e o ${task.reviewAgent} revisa`, `, and ${task.reviewAgent} reviews it`) : '';
     return say(language,
-      `Registrei a tarefa ${task.id} no ${project.name} para o ${agent}. Ainda não consigo rodar agentes, então ela fica parada até essa parte existir.`,
-      `I registered task ${task.id} in ${project.name} for ${agent}. I can't run agents yet, so it stays on hold until that part exists.`);
+      `Mandei a tarefa ${task.id} para o ${agent} no ${project.name}${reviewer}. Trabalha numa pasta separada; te aviso quando terminar.`,
+      `Sent task ${task.id} to ${agent} in ${project.name}${reviewer}. It works in a separate folder; I'll tell you when it's done.`);
+  }
+
+  private async setProjectPath(intent: Extract<Intent, { kind: 'set-project-path' }>, language: Language): Promise<string> {
+    const project = await this.resolveProject(intent.projectHint);
+    if (!project) return say(language, 'De qual projeto é essa pasta? Fale o nome junto.', 'Which project is that folder for? Say the name too.');
+    const branch = await defaultBranchOf(intent.path);
+    if (!branch.ok) return say(language, `Essa pasta não é um repositório git: ${intent.path}.`, `That folder isn't a git repository: ${intent.path}.`);
+    await this.memory.upsertProject({ ...project, repoPath: intent.path, defaultBranch: branch.name });
+    return say(language, `Pronto: o ${project.name} agora é ${intent.path}, branch ${branch.name}.`,
+      `Done: ${project.name} is now ${intent.path}, branch ${branch.name}.`);
+  }
+
+  /** Tarefas abertas que batem com a dica (projeto ou "all"); sem dica, só se houver uma. */
+  private async pickTasks(hint: string | null, pool: Task[]): Promise<Task[]> {
+    if (hint === 'all') return pool;
+    const project = hint ? await this.resolveProject(hint) : null;
+    if (project) return pool.filter((t) => t.projectId === project.id);
+    return pool.length === 1 ? pool : [];
   }
 
   private async cancel(intent: Extract<Intent, { kind: 'cancel' }>, language: Language): Promise<string> {
     const open = (await this.memory.listTasks()).filter((t) => !FINAL_TASK_STATUSES.includes(t.status));
-    const project = intent.taskHint && intent.taskHint !== 'all' ? await this.resolveProject(intent.taskHint) : null;
-    const targets = project ? open.filter((t) => t.projectId === project.id) : intent.taskHint === 'all' ? open : open.length === 1 ? open : [];
     if (open.length === 0) return say(language, 'Não tem tarefa aberta para cancelar.', 'There is no open task to cancel.');
+    const targets = await this.pickTasks(intent.taskHint, open);
     if (targets.length === 0) return say(language, `Tem ${open.length} tarefas abertas. Qual delas? Fale o projeto ou "cancela tudo".`,
       `There are ${open.length} open tasks. Which one? Say the project or "cancel everything".`);
-    // Nenhum agente roda ainda (M5), então cancelar é só mudar o status: não há processo para matar.
-    for (const t of targets) await this.memory.updateTaskStatus(t.id, 'cancelled', 'owner', 'cancelada por comando');
-    return say(language, `Cancelei ${targets.length === 1 ? 'a tarefa' : `${targets.length} tarefas`}.`,
-      `Cancelled ${targets.length === 1 ? 'the task' : `${targets.length} tasks`}.`);
+    const results: string[] = [];
+    for (const t of targets) {
+      if (this.tasks) {
+        const r = await this.tasks.cancel(t.id);
+        results.push(`${t.id}: ${r.detail}`);
+      } else {
+        await this.memory.updateTaskStatus(t.id, 'cancelled', 'owner', 'cancelada por comando');
+        results.push(t.id);
+      }
+    }
+    return say(language, `Cancelei ${targets.length === 1 ? 'a tarefa' : `${targets.length} tarefas`}${this.tasks ? ` (${results.join('; ')})` : ''}.`,
+      `Cancelled ${targets.length === 1 ? 'the task' : `${targets.length} tasks`}${this.tasks ? ` (${results.join('; ')})` : ''}.`);
   }
 
-  private async approval(_intent: Extract<Intent, { kind: 'approval' }>, language: Language): Promise<string> {
-    const pending = await this.memory.listPendingApprovals();
-    if (pending.length === 0) return say(language, 'Não tem nada esperando aprovação.', 'Nothing is waiting for approval.');
-    // Decidir merge depende do WorktreeManager (M4, Codex). Até lá, não decide nada por voz.
-    return say(language, `Tem ${pending.length} pedido${pending.length > 1 ? 's' : ''} esperando, mas a aprovação por voz ainda não está ligada.`,
-      `${pending.length} request${pending.length > 1 ? 's are' : ' is'} waiting, but voice approval isn't wired up yet.`);
+  private async waitingTasks(): Promise<Task[]> {
+    const pending = new Set((await this.memory.listPendingApprovals()).map((a) => a.taskId));
+    return (await this.memory.listTasks({ status: ['awaiting-approval'] })).filter((t) => pending.has(t.id));
   }
+
+  private async approval(intent: Extract<Intent, { kind: 'approval' }>, language: Language): Promise<string> {
+    const waiting = await this.waitingTasks();
+    if (waiting.length === 0) return say(language, 'Não tem nada esperando aprovação.', 'Nothing is waiting for approval.');
+    if (!this.tasks) return say(language, 'A execução de agentes está desligada; não dá para aprovar agora.', "Agent execution is off; I can't approve now.");
+    const targets = await this.pickTasks(intent.taskHint, waiting);
+    if (targets.length !== 1) {
+      return say(language, `Tem ${waiting.length} tarefas esperando. Fale o projeto junto, por exemplo "aprovo a do ${(await this.memory.getProject(waiting[0]!.projectId))?.name ?? 'projeto'}".`,
+        `${waiting.length} tasks are waiting. Say the project too.`);
+    }
+    try {
+      const r = intent.decision === 'approve' ? await this.tasks.approve(targets[0]!.id) : await this.tasks.reject(targets[0]!.id);
+      return r.message;
+    } catch (err) {
+      return say(language, `Não consegui: ${(err as Error).message}.`, `I couldn't: ${(err as Error).message}.`);
+    }
+  }
+
+  private async showDiff(intent: Extract<Intent, { kind: 'show-diff' }>, language: Language): Promise<{ text: string; detail?: string }> {
+    const candidates = (await this.memory.listTasks()).filter((t) => t.worktreePath && !FINAL_TASK_STATUSES.includes(t.status));
+    if (!this.tasks || candidates.length === 0) return { text: say(language, 'Não tem mudança de agente para mostrar.', 'No agent changes to show.') };
+    const [task] = await this.pickTasks(intent.taskHint, candidates);
+    if (!task) return { text: say(language, `Tem ${candidates.length} tarefas com mudanças. Fale o projeto junto.`, `${candidates.length} tasks have changes. Say the project too.`) };
+    const { diff } = await this.tasks.changes(task.id);
+    const names = diff.changedFiles.slice(0, 5).map((f) => f.path.split('/').pop()).join(', ');
+    const more = diff.changedFiles.length > 5 ? say(language, ` e mais ${diff.changedFiles.length - 5}`, ` and ${diff.changedFiles.length - 5} more`) : '';
+    const text = say(language,
+      `A tarefa ${task.id} mudou ${diff.changedFiles.length} arquivo${diff.changedFiles.length === 1 ? '' : 's'}: ${names}${more}. O diff completo está na tela.`,
+      `Task ${task.id} changed ${diff.changedFiles.length} file${diff.changedFiles.length === 1 ? '' : 's'}: ${names}${more}. The full diff is on screen.`);
+    return { text, detail: `${task.resultSummary ?? ''}\n\n${diffStat(diff)}\n\n${diff.patch}`.trim() };
+  }
+}
+
+/** O branch atual de um repositório (para cadastrar o projeto). */
+async function defaultBranchOf(repo: string): Promise<{ ok: true; name: string } | { ok: false }> {
+  const { execFile } = await import('node:child_process');
+  return new Promise((resolve) => {
+    execFile('git', ['-C', repo, 'symbolic-ref', '--short', 'HEAD'], { windowsHide: true }, (err, stdout) => {
+      resolve(err ? { ok: false } : { ok: true, name: stdout.trim() });
+    });
+  });
 }

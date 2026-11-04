@@ -64,6 +64,10 @@ const RESEARCH = new RegExp([
 
 // "branch", "merge" e "status" ficam de fora: aparecem demais em pergunta comum ("o que é uma branch?").
 const COMMANDISH = /\b(ideias?|ideas?|tarefas?|tasks?|projetos?|projects?|claude|codex)\b/;
+const SHOW_DIFF = /\b(mostra|mostre|me mostra|quais (sao )?as|ver|veja)\b.{0,15}\b(mudancas|alteracoes|diff)\b|\bo que (o \w+ )?mudou\b|\bshow (me )?(the )?(changes|diff)\b|\bwhat changed\b/;
+// Caminho do Windows no texto: "a pasta do Soaken é C:\Users\Joel\Desktop\PROFESSOR\tutor-pc"
+const WIN_PATH = /([a-z]:[\\/][^\s"'<>|?*]+)/i;
+const SET_PATH = /\b(pasta|repo|repositorio|caminho|folder|path)\b/;
 
 /** Tira o "salva essa ideia para o Abstrike:" do começo e devolve só a ideia (pode ficar vazio). */
 export function ideaBody(original: string, projectName: string | null): string {
@@ -77,12 +81,12 @@ export function ideaBody(original: string, projectName: string | null): string {
   return body.replace(/^[\s,:;.\-–—]+/, '').replace(/^(que|that|é|e)\s+/i, '').trim();
 }
 
-/** Só as regras, sem modelo. null = nenhuma regra reconheceu. */
 /** "Night, salva..." / "Hey Night, ..." → "salva...". Chamar o Night pelo nome não é falar do projeto Night. */
 export function stripWakeWord(text: string): string {
   return text.replace(/^\s*((hey|hi|oi|ola|olá|ok|e a[ií])[\s,]+)?night\b[\s,.!:;-]*/i, '').trim() || text.trim();
 }
 
+/** Só as regras, sem modelo. null = nenhuma regra reconheceu. */
 export function ruleIntent(rawText: string, projectNames: string[]): Intent | null {
   const text = stripWakeWord(rawText);
   const n = normalize(text);
@@ -95,8 +99,12 @@ export function ruleIntent(rawText: string, projectNames: string[]): Intent | nu
   if (CANCEL.test(n) && !SAVE_IDEA.test(n)) return { kind: 'cancel', taskHint: project ?? (/\b(tudo|todos|all|everything)\b/.test(n) ? 'all' : null) };
   if (SAVE_IDEA.test(n)) return { kind: 'save-idea', projectHint: project, text: ideaBody(text, project) };
   if (FIND_IDEAS.test(n)) return { kind: 'find-ideas', projectHint: project, query: '' };
-  if (STATUS.test(n)) return { kind: 'status', taskHint: project };
+  const winPath = text.match(WIN_PATH)?.[1];
+  if (winPath && SET_PATH.test(n)) return { kind: 'set-project-path', projectHint: project, path: winPath.replace(/[.,;]+$/, '') };
+  // Pesquisa explícita antes de "o que mudou": "pesquisa o que mudou na versão X" é pesquisa.
   if (RESEARCH.test(n)) return { kind: 'research', query: text.trim() };
+  if (SHOW_DIFF.test(n)) return { kind: 'show-diff', taskHint: project };
+  if (STATUS.test(n)) return { kind: 'status', taskHint: project };
   if (DELEGATE.test(n) || (CODE_VERB.test(n) && CODE_NOUN.test(n))) {
     return { kind: 'coding-task', projectHint: project, objective: text.trim(), agent: agentIn(n) };
   }

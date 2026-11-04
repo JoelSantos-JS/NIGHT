@@ -16,7 +16,7 @@ describe('agentes sabem uns dos outros', () => {
   beforeEach(async () => {
     await truncateAll();
     llm.calls = [];
-    await mem.upsertProject({ id: 'soaken', name: 'Soaken', description: '', repoPath: null, defaultBranch: null, allowedPaths: [], status: 'active' });
+    await mem.upsertProject({ id: 'soaken', name: 'Soaken', description: '', repoPath: 'C:/repos/soaken', defaultBranch: 'main', allowedPaths: [], status: 'active' });
   });
 
   test('o Claude recebe o que o Codex respondeu, as tarefas abertas e quem ele é', async () => {

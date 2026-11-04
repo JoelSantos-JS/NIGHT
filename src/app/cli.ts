@@ -8,12 +8,15 @@ import type { Reply } from './coordinator.ts';
 const DIM = '\u001b[2m';
 const RESET = '\u001b[0m';
 
-const { memory, llm, llmOk, night } = await createNight();
+const { memory, llm, llmOk, night, tasks, stuck } = await createNight();
+tasks.on('update', (u) => console.log(u.important ? `\nnight › ${u.message}` : `${DIM}[tarefa ${u.task.id}] ${u.message}${RESET}`));
+if (stuck.length) console.log(`${stuck.length} tarefa(s) estavam rodando quando o Night fechou; marquei como falha.`);
 if (!llmOk) console.error(`Aviso: o Ollama não respondeu ou não tem o modelo ${llm.model}. A conversa vai falhar até ele subir.`);
 
 function show(reply: Reply, startedAt: number) {
   const secs = ((performance.now() - startedAt) / 1000).toFixed(1);
   console.log(`night › ${reply.text || '(em silêncio)'}`);
+  if (reply.detail) console.log(`${DIM}${reply.detail}${RESET}`);
   console.log(`${DIM}        [${reply.intent} · ${reply.model} · ${reply.language} · ${secs}s]${RESET}`);
 }
 

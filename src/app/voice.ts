@@ -26,7 +26,7 @@ const HALLUCINATIONS = [
   /^[\s.…!?,-]*$/,
 ];
 
-const { memory, llm, llmOk, night } = await createNight();
+const { memory, llm, llmOk, night, tasks, stuck } = await createNight();
 if (!llmOk) console.error(`${RED}Aviso: o Ollama não respondeu ou não tem o ${llm.model}. A conversa vai falhar até ele subir.${RESET}`);
 
 const speech = new SpeechService();
@@ -56,6 +56,7 @@ async function respond(text: string, language?: 'pt-BR' | 'en' | null) {
   const reply = await night.handle(text, language ?? undefined);
   if (reply.intent === 'stop-speaking') { speech.stop(); return; }
   console.log(`night › ${reply.text}  ${DIM}[${reply.intent} · ${reply.model} · ${((performance.now() - t) / 1000).toFixed(1)}s]${RESET}`);
+  if (reply.detail) console.log(`${DIM}${reply.detail}${RESET}`);
   say(reply);
   if (!reply.followUp) return;
   // Pesquisa: a conversa continua; se demorar, avisa uma vez que ainda está procurando.
@@ -101,6 +102,15 @@ speech.on('auto', (ev) => {
   else if (ev.type === 'speech_discarded') process.stdout.write(`${DIM}(curto demais, ignorei)${RESET}\n`);
   else if (ev.type === 'error') console.error(`${RED}erro na escuta: ${ev.message}${RESET}`);
 });
+
+// Tarefas de código: o Night avisa sozinho quando termina, falha ou precisa de aprovação.
+tasks.on('update', (u) => {
+  if (!u.important) { console.log(`${DIM}[tarefa ${u.task.id}] ${u.message}${RESET}`); return; }
+  console.log(`\nnight › ${u.message}`);
+  lastNightText = u.message;
+  speech.speak(u.message, 'pt-BR').catch(() => {});
+});
+if (stuck.length) console.log(`${DIM}${stuck.length} tarefa(s) estavam rodando quando o Night fechou; marquei como falha (não recomecei sozinho).${RESET}`);
 
 await speech.startAuto();
 console.log(`\n${GREEN}🎙 Pode falar.${RESET} O Night responde quando você para (~1,3 s de silêncio).`);
