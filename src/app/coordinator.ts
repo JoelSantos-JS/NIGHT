@@ -15,7 +15,8 @@ import { QuotaError } from '../agents/research.ts';
 import { buildSharedContext } from '../agents/shared-context.ts';
 import type { ChatAgent } from '../agents/chat.ts';
 import { diffStat, otherAgent, type TaskScheduler } from '../agents/scheduler.ts';
-import { detectLanguage, ruleIntent } from '../router/router.ts';
+import { detectLanguage, normalize, ruleIntent } from '../router/router.ts';
+import { describePlan, detectRunner, findFolders, WindowLauncher, type FolderHit, type Launcher, type RunPlan } from '../tools/projects.ts';
 
 export interface Reply {
   text: string;
@@ -100,11 +101,35 @@ export class NightCoordinator {
     private readonly tasks?: TaskScheduler,
     /** Conversa normal (alternando); vazio = só o Qwen local. */
     private readonly chatters: ChatAgent[] = [],
+    /** Abre o projeto numa janela própria (só depois do "pode" do Joel). */
+    private readonly launcher: Launcher = new WindowLauncher(),
+    /** Procura de pastas (trocável nos testes). */
+    private readonly folderSearch: (spoken: string) => FolderHit[] = (s) => findFolders(s),
   ) {}
+
+  /** Rodar projeto espera o "pode": é uma ação no PC do Joel. */
+  private pendingRun: { plan: RunPlan; title: string; at: number } | null = null;
 
   async handle(text: string, languageOverride?: Language): Promise<Reply> {
     const language = languageOverride ?? detectLanguage(text);
     await this.restoreHistory();
+
+    if (this.pendingRun) {
+      const pending = this.pendingRun;
+      this.pendingRun = null;
+      const n = normalize(withoutVocative(text));
+      const fresh = Date.now() - pending.at < 5 * 60_000;
+      // Só a confirmação inteira: "roda o outro projeto" não pode confirmar este.
+      if (fresh && /^(sim|pode|pode sim|pode rodar|roda|rode|roda ai|manda|manda ver|confirmo|confirma|isso|ok|beleza|yes|go|go ahead|do it|sure)( sim| ai| la| pode| por favor| please)?[.!]*$/.test(n)) {
+        const r = await this.launcher.launch(pending.plan, pending.title);
+        const out = r.ok
+          ? say(language, `Abri o ${pending.title} numa janela própria (${r.detail}). Feche a janela para parar.`, `Opened ${pending.title} in its own window (${r.detail}). Close the window to stop it.`)
+          : say(language, `Não consegui rodar: ${r.detail}.`, `I couldn't run it: ${r.detail}.`);
+        await this.memory.logRoute({ text, language, decision: { intent: { kind: 'run-project', target: pending.title }, model: 'rules', reason: 'confirmado pelo dono', usedPremiumQuota: false }, reply: out });
+        return this.finish(text, language, out, 'run-project', 'rules');
+      }
+      // Qualquer outra coisa cancela o pedido de rodar e segue normal.
+    }
 
     if (this.pendingIdea) {
       const { projectId } = this.pendingIdea;
@@ -144,6 +169,8 @@ export class NightCoordinator {
       case 'approval': out = await this.approval(intent, language); break;
       case 'set-project-path': out = await this.setProjectPath(intent, language); break;
       case 'show-diff': ({ text: out, detail } = await this.showDiff(intent, language)); break;
+      case 'run-project': out = await this.prepareRun(intent.target, language); break;
+      case 'find-folder': out = await this.findFolder(intent.target, language); break;
       case 'stop-speaking': out = ''; break;
     }
     // Grava depois de agir, com a resposta: é isso que os outros agentes vão ver no contexto.
@@ -426,6 +453,45 @@ export class NightCoordinator {
       `A tarefa ${task.id} mudou ${diff.changedFiles.length} arquivo${diff.changedFiles.length === 1 ? '' : 's'}: ${names}${more}. O diff completo está na tela.`,
       `Task ${task.id} changed ${diff.changedFiles.length} file${diff.changedFiles.length === 1 ? '' : 's'}: ${names}${more}. The full diff is on screen.`);
     return { text, detail: `${task.resultSummary ?? ''}\n\n${diffStat(diff)}\n\n${diff.patch}`.trim() };
+  }
+
+  /** Acha a pasta: primeiro nos projetos cadastrados, depois no PC (Desktop, Documentos, D:). */
+  private async locate(target: string): Promise<{ name: string; dir: string } | { ambiguous: FolderHit[] } | null> {
+    const project = await this.memory.findProjectByName(target);
+    if (project?.repoPath) return { name: project.name, dir: project.repoPath };
+    const hits = this.folderSearch(target);
+    if (hits.length === 0) return null;
+    if (hits.length > 1 && hits[0]!.score - hits[1]!.score < 5) return { ambiguous: hits.slice(0, 3) };
+    const best = hits[0]!;
+    // Cadastra como projeto, para depois dar para pedir código nele ("pede pro Claude ... no AWS PREP").
+    const branch = await defaultBranchOf(best.path);
+    const existing = await this.memory.findProjectByName(best.name);
+    await this.memory.upsertProject({
+      id: existing?.id ?? best.name.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+      name: existing?.name ?? best.name, description: existing?.description ?? 'achado no PC pelo Night',
+      repoPath: best.path, defaultBranch: branch.ok ? branch.name : null, allowedPaths: existing?.allowedPaths ?? [], status: 'active',
+    });
+    return { name: best.name, dir: best.path };
+  }
+
+  private async findFolder(target: string, language: Language): Promise<string> {
+    if (!target) return say(language, 'Qual pasta? Fala o nome dela.', 'Which folder? Say its name.');
+    const found = await this.locate(target);
+    if (!found) return say(language, `Não achei nenhuma pasta parecida com "${target}" no Desktop, em Documentos nem no D:.`, `I couldn't find a folder like "${target}" in Desktop, Documents or D:.`);
+    if ('ambiguous' in found) return say(language, `Achei mais de uma: ${found.ambiguous.map((h) => h.name).join(', ')}. Qual delas?`, `I found more than one: ${found.ambiguous.map((h) => h.name).join(', ')}. Which one?`);
+    return say(language, `Achei: ${found.dir}. Cadastrei como projeto ${found.name}.`, `Found it: ${found.dir}. Registered as project ${found.name}.`);
+  }
+
+  private async prepareRun(target: string, language: Language): Promise<string> {
+    const found = await this.locate(target);
+    if (!found) return say(language, `Não achei nenhuma pasta parecida com "${target}". Fala o nome de novo ou digite o caminho.`, `I couldn't find a folder like "${target}". Say the name again or type the path.`);
+    if ('ambiguous' in found) return say(language, `Achei mais de uma: ${found.ambiguous.map((h) => h.name).join(', ')}. Qual delas?`, `I found more than one: ${found.ambiguous.map((h) => h.name).join(', ')}. Which one?`);
+    const plan = detectRunner(found.dir);
+    const how = describePlan(plan, language !== 'en');
+    if (plan.kind === 'unknown') return say(language, `Achei ${found.dir}, mas ${how.charAt(0).toLowerCase()}${how.slice(1)}`, `Found ${found.dir}, but ${how}`);
+    this.pendingRun = { plan, title: found.name, at: Date.now() };
+    const where = plan.dir === found.dir ? found.dir : plan.dir;
+    return say(language, `Achei o ${found.name} em ${where}. ${how} Posso rodar?`, `Found ${found.name} at ${where}. ${how} Shall I run it?`);
   }
 }
 

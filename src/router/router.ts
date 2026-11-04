@@ -42,7 +42,7 @@ export function projectIn(n: string, projectNames: string[]): string | null {
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const SAVE_IDEA = /\b(salva|salve|salvar|guarda|guarde|anota|anote|registra|registre)\b.{0,20}\bideia\b|\b(save|note|record|jot down)\b.{0,15}\bidea\b|\bnova ideia\b|\bnew idea\b/;
+const SAVE_IDEA = /\b(salva|salve|salvar|guarda|guarde|anota|anote|registra|registre)\b.{0,20}\bideia\b|\b(save|note|record|jot down)\b.{0,15}\bidea\b|\bnova ideia\b|\bideia nova\b|\bnew idea\b/;
 const FIND_IDEAS = /\b(quais|mostra|mostre|lista|liste|lembra|busca|procura)\b.{0,25}\bideias?\b|\b(list|show|find|what|which|recall)\b.{0,20}\bideas\b|\bminhas ideias\b|\bmy ideas\b/;
 const STATUS = /\b(ta|esta|ainda|ja) (pesquisando|precisando)\b|\b(ja )?(achou|terminou a pesquisa)\b|\bstill (searching|looking)\b|\bo que (voce )?(esta|ta) (fazendo|rodando)\b|\b(o que|que) (esta|ta) rodando\b|\bwhat('?s| is| are)( you)? (running|doing|working on)\b|\bstatus\b|\bcomo (esta|ta|anda|vai) (a |o )?(tarefa|trabalho|experimento)\b|\bhow is\b.{0,40}\b(task|going)\b|\bprogress\b|\bandamento\b/;
 const STOP_SPEAKING = /^(para|pare|parar) de falar\b|^(stop|quit) talking\b|^silencio\b|^(shut up|be quiet|quiet)\b|^chega\b/;
@@ -116,6 +116,31 @@ export function stripWakeWord(text: string): string {
   return text.replace(/^\s*((hey|hi|oi|ola|olá|ok|e a[ií])[\s,]+)?night\b[\s,.!:;-]*/i, '').trim() || text.trim();
 }
 
+// Rodar/abrir um projeto ou achar uma pasta no PC (uso real 04/11: "roda o AWS Prepping pra mim").
+const RUN = /\b(roda|rode|rodar|executa|execute|executar|inicia|inicie|iniciar|abre|abra|abrir|liga|ligue|sobe|suba|run|start|launch|open)\b/;
+const FIND = /\b(procura|procure|procurar|acha|ache|achar|encontra|encontre|encontrar|localiza|localize|busca|busque|find|locate|look for)\b/;
+const FOLDERISH = /\b(pasta|pastas|projeto|projetos|arquivo|arquivos|app|aplicativo|site|desktop|area de trabalho|meu pc|computador|folder|project|file)\b/;
+const FILLER = /^(o|a|os|as|do|da|de|no|na|meu|minha|pra mim|para mim|projeto|pasta|parte|app|aplicativo|site|chamad[oa]|the|my|project|folder|app|called|named)\s+/i;
+
+/** Tira o nome do alvo: "procure uma parte chamada AWS Prepping" / "roda o AWS Prepping pra mim" → "AWS Prepping". */
+export function targetName(text: string, verbRe: RegExp): string {
+  const called = text.match(/\b(chamad[oa]|called|named)\s+([^,.;!?]+)/i)?.[2];
+  let t = called ?? '';
+  if (!t) {
+    const words = text.split(/\s+/);
+    // depois do ÚLTIMO verbo de ação ("...eu quero que você roda o AWS Prepping pra mim")
+    let idx = -1;
+    words.forEach((w, i) => { if (verbRe.test(normalize(w))) idx = i; });
+    t = idx >= 0 ? words.slice(idx + 1).join(' ') : '';
+  }
+  t = t.replace(/[,.;!?]+.*$/, '');
+  t = t.replace(/\s+(pra mim|para mim|for me|no (meu )?(pc|computador|desktop)|na area de trabalho|no desktop|aqui|agora|please|por favor)\b.*$/i, '');
+  for (let i = 0; i < 4; i++) t = t.replace(FILLER, '');
+  t = t.replace(/\s+(projeto|project|folder|pasta|app)$/i, '').trim();
+  // Sem nome de verdade ("procura aqui as pastas"): fica vazio e o Night pergunta qual.
+  return /^(aqui|ali|isso|isto|as pastas|os arquivos|os projetos|tudo|it|this|that|here)?$/i.test(normalize(t)) ? '' : t;
+}
+
 /** Só as regras, sem modelo. null = nenhuma regra reconheceu. */
 export function ruleIntent(rawText: string, projectNames: string[]): Intent | null {
   const text = stripWakeWord(rawText);
@@ -130,6 +155,14 @@ export function ruleIntent(rawText: string, projectNames: string[]): Intent | nu
   if (!negated && CANCEL.test(n) && !SAVE_IDEA.test(n)) return { kind: 'cancel', taskHint: project ?? (/\b(tudo|todos|all|everything)\b/.test(n) ? 'all' : null) };
   if (SAVE_IDEA.test(n)) return { kind: 'save-idea', projectHint: project, text: ideaBody(text, project) };
   if (FIND_IDEAS.test(n)) return { kind: 'find-ideas', projectHint: project, query: '' };
+  // Rodar/achar pasta vem antes da pesquisa: "procura a pasta X" não é pesquisa na internet.
+  // "O Ollama roda no Windows?" é pergunta; "você pode rodar o X?" e "roda o X pra mim?" são pedido.
+  const askingToDo = !/\?\s*$/.test(text) || /\b(voce|pode|poderia|consegue|pra mim|para mim|can you|could you|for me|please)\b/.test(n);
+  if (askingToDo && RUN.test(n) && !SAVE_IDEA.test(n) && !/\b(ideia|idea)\b/.test(n)) {
+    const target = targetName(text, RUN);
+    if (target && !/\b(teste|testes|test|tests)\b/i.test(target)) return { kind: 'run-project', target };
+  }
+  if (FIND.test(n) && FOLDERISH.test(n)) return { kind: 'find-folder', target: targetName(text, FIND) };
   const winPath = text.match(WIN_PATH)?.[1];
   if (winPath && SET_PATH.test(n)) return { kind: 'set-project-path', projectHint: project, path: winPath.replace(/[.,;]+$/, '') };
   // Pesquisa explícita antes de "o que mudou": "pesquisa o que mudou na versão X" é pesquisa.

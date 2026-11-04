@@ -59,6 +59,10 @@ export type Intent =
   | { kind: 'coding-task'; projectHint: string | null; objective: string; agent: AgentName | null }
   /** Fato atual ou pesquisa: vai para um modelo menor do Codex/Claude com busca na internet (D-009). */
   | { kind: 'research'; query: string }
+  /** "Roda o AWS Prep pra mim": acha a pasta, diz como vai rodar e só roda depois do "pode". */
+  | { kind: 'run-project'; target: string }
+  /** "Procura a pasta X no desktop": só procura e cadastra como projeto. */
+  | { kind: 'find-folder'; target: string }
   /** "Mostra as mudanças" (blueprint §6). */
   | { kind: 'show-diff'; taskHint: string | null }
   /** "A pasta do projeto X é C:\..." — liga o projeto a um repositório. */
