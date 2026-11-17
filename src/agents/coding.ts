@@ -1,20 +1,28 @@
 // Agentes de código: Claude Code e Codex pelas CLIs oficiais (assinatura do Joel, sem API paga), com os
-// modelos MAIORES (D-009). Cada um roda dentro da worktree da tarefa e só nela.
+// modelos MAIORES (D-009), e o DeepSeek pela API compatível com Anthropic (D12/H01). Cada um roda dentro
+// da worktree da tarefa e só nela.
 //
 // Limites (blueprint §7 e §9): sem push, sem internet, sem tocar fora da worktree. Worktree não é sandbox
 // de segurança: o Codex roda com o sandbox dele (workspace-write) e o Claude só com ferramentas listadas.
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import type { AgentRun, CodingAgent, Worktree } from '../core/interfaces.ts';
 import type { AgentName, Task } from '../core/types.ts';
+import { CredentialStore } from '../jobs/credentials.ts';
 import { agentEnv } from './env.ts';
 import { findClaudeBin, findCodexBin } from './research.ts';
 
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
 const LIMIT_RE = /usage limit|rate limit|limite de uso|quota|try again at|429|too many requests/i;
+
+/** Endpoints do DeepSeek (D12/H01): a API compatível com Anthropic e a consulta de saldo. */
+export const DEEPSEEK_ANTHROPIC_URL = 'https://api.deepseek.com/anthropic';
+export const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
+/** Teto de custo: abaixo disso o DeepSeek nem começa a tarefa (dólares). */
+export const DEEPSEEK_MIN_BALANCE_USD = 0.05;
 
 export interface RunOutcome {
   exitCode: number | null;
@@ -60,6 +68,14 @@ abstract class CliCodingAgent implements CodingAgent {
 
   constructor(protected readonly timeoutMs = DEFAULT_TIMEOUT_MS) {}
 
+  /**
+   * Ambiente do processo filho. O padrão tira as chaves (agentEnv); o DeepSeek sobrescreve para
+   * apontar a CLI à API dele. A chave só existe aqui, nunca em args, log, evento ou resumo.
+   */
+  protected env(): NodeJS.ProcessEnv {
+    return agentEnv();
+  }
+
   abstract available(): Promise<{ ok: boolean; detail: string }>;
 
   async start(task: Task, worktree: Worktree, prompt: string): Promise<AgentRun> {
@@ -67,7 +83,7 @@ abstract class CliCodingAgent implements CodingAgent {
     const outFile = path.join(scratch, 'last-message.txt');
     const { bin, args } = this.command(prompt, worktree, outFile);
     if (!bin) throw new Error(`${this.name}: executável não encontrado`);
-    const child = spawn(bin, args, { cwd: worktree.path, env: agentEnv(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(bin, args, { cwd: worktree.path, env: this.env(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     this.children.set(task.id, child);
     let stdout = '';
     let stderr = '';
@@ -247,5 +263,141 @@ export class CodexCodingAgent extends CliCodingAgent {
 
   protected readResult(_stdout: string, outFile: string): string {
     return existsSync(outFile) ? readFileSync(outFile, 'utf8').trim() : '';
+  }
+}
+
+export interface DeepSeekCodingAgentOptions {
+  /** Nos testes: executável falso. Sem ele, procura a CLI do Claude Code. */
+  bin?: string | null;
+  /** Nos testes: chave falsa. Sem ela, CredentialStore.get('deepseek', 'executor'). */
+  apiKey?: () => string;
+  model?: string;
+  /** Nos testes: fetch falso; o padrão é o globalThis.fetch. */
+  fetchImpl?: typeof fetch;
+  /** Nos testes: endpoint de saldo falso. */
+  balanceUrl?: string;
+  timeoutMs?: number;
+}
+
+type BalanceBody = { balance_infos?: { currency?: string; total_balance?: string }[] };
+
+/**
+ * DeepSeek como executor de código (D12/H01): a MESMA CLI do Claude Code, em modo --bare, apontada para a
+ * API compatível com Anthropic do DeepSeek. O DeepSeek não faz commit: o NIGHT confere o diff na worktree.
+ * Teto de custo: consulta o saldo antes e recusa começar abaixo de US$ 0,05; o custo real vai no resumo.
+ */
+export class DeepSeekCodingAgent extends CliCodingAgent {
+  readonly name = 'deepseek' as const;
+  private readonly bin: string | null;
+  private readonly apiKey: () => string;
+  private readonly model: string;
+  private readonly fetchImpl: typeof fetch;
+  private readonly balanceUrl: string;
+
+  constructor(options: DeepSeekCodingAgentOptions = {}) {
+    super(options.timeoutMs);
+    this.bin = options.bin === undefined ? findClaudeBin() : options.bin;
+    this.apiKey = options.apiKey ?? (() => new CredentialStore().get('deepseek', 'executor'));
+    this.model = options.model ?? process.env.NIGHT_CODE_DEEPSEEK_MODEL ?? 'deepseek-flash';
+    this.fetchImpl = options.fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
+    this.balanceUrl = options.balanceUrl ?? DEEPSEEK_BALANCE_URL;
+  }
+
+  async available() {
+    if (!this.bin) return { ok: false, detail: 'a CLI do Claude Code não foi encontrada; é ela que roda o DeepSeek em --bare' };
+    const r = spawnSync(this.bin, ['--version'], { encoding: 'utf8', windowsHide: true });
+    if (r.status !== 0) return { ok: false, detail: (r.stdout || r.stderr || String(r.error)).trim() };
+    try {
+      await this.requireBalance();
+    } catch (err) {
+      return { ok: false, detail: (err as Error).message };
+    }
+    return { ok: true, detail: `Claude Code CLI em --bare na API do DeepSeek (${this.model})` };
+  }
+
+  /** O saldo antes é o teto de custo: sem ele (ou abaixo do mínimo) a tarefa nem começa. */
+  async start(task: Task, worktree: Worktree, prompt: string): Promise<AgentRun> {
+    const antes = await this.requireBalance();
+    const run = await super.start(task, worktree, prompt);
+    const done = run.done.then(async (resultado) => {
+      const outcome = resultado as RunOutcome;
+      let depois: number | null = null;
+      try { depois = await this.balanceUsd(); } catch { /* sem saldo depois: fica sem o custo, mas a tarefa vale */ }
+      if (depois === null) return outcome;
+      const custo = Math.max(0, antes - depois);
+      return { ...outcome, summary: `${outcome.summary} (custo DeepSeek: US$ ${custo.toFixed(4)})` };
+    });
+    return { ...run, done };
+  }
+
+  /** A chave entra aqui, no ambiente do filho, e em lugar nenhum mais. */
+  protected env(): NodeJS.ProcessEnv {
+    return {
+      ...agentEnv(),
+      ANTHROPIC_BASE_URL: DEEPSEEK_ANTHROPIC_URL,
+      ANTHROPIC_API_KEY: this.apiKey(),
+      ANTHROPIC_MODEL: this.model,
+      ANTHROPIC_SMALL_FAST_MODEL: 'deepseek-flash',
+      // Configuração só do DeepSeek: não mexe no login/config global do Claude do Joel.
+      CLAUDE_CONFIG_DIR: path.join(homedir(), '.deepseek', 'claude-config'),
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      DISABLE_TELEMETRY: '1',
+      DISABLE_AUTOUPDATER: '1',
+    };
+  }
+
+  protected command(prompt: string) {
+    return {
+      bin: this.bin,
+      args: [
+        '-p', prompt,
+        '--model', this.model,
+        '--bare', '--strict-mcp-config',
+        '--tools', 'Read,Edit,Write,Glob,Grep,Bash', // só estas existem; sem WebFetch/WebSearch/Task
+        '--permission-mode', 'acceptEdits',
+        // Sem git add/commit: quem confere e versiona é o NIGHT, não o DeepSeek.
+        '--allowedTools', 'Read', 'Edit', 'Write', 'Glob', 'Grep',
+        'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)',
+        'Bash(pnpm test:*)', 'Bash(pnpm typecheck:*)', 'Bash(npm test:*)', 'Bash(npm run test:*)', 'Bash(node --test:*)',
+        '--disallowedTools', 'WebFetch', 'WebSearch', 'Bash(git push:*)', 'Bash(git commit:*)',
+        'Bash(git reset:*)', 'Bash(git checkout:*)', 'Bash(git switch:*)', 'Bash(rm:*)', 'Bash(curl:*)', 'Bash(ssh:*)',
+        '--output-format', 'json', '--no-session-persistence',
+      ],
+    };
+  }
+
+  protected readResult(stdout: string): string {
+    const parsed = JSON.parse(stdout) as { result?: string };
+    return (parsed.result ?? '').trim();
+  }
+
+  /** Saldo em dólar (balance_infos com currency USD). Erro nunca mostra a chave. */
+  private async balanceUsd(): Promise<number> {
+    const key = this.apiKey();
+    let res: Response;
+    try {
+      res = await this.fetchImpl(this.balanceUrl, { method: 'GET', headers: { authorization: `Bearer ${key}` } });
+    } catch {
+      throw new Error('não consegui consultar o saldo da API DeepSeek; sem o teto de custo eu não começo');
+    }
+    if (!res.ok) throw new Error(`não consegui consultar o saldo da API DeepSeek (HTTP ${res.status})`);
+    let body: BalanceBody;
+    try {
+      body = (await res.json()) as BalanceBody;
+    } catch {
+      throw new Error('resposta de saldo da DeepSeek não é JSON');
+    }
+    const usd = body.balance_infos?.find((b) => (b.currency ?? '').toUpperCase() === 'USD');
+    const valor = Number(usd?.total_balance);
+    if (!Number.isFinite(valor)) throw new Error('saldo da DeepSeek sem valor em dólar (USD)');
+    return valor;
+  }
+
+  private async requireBalance(): Promise<number> {
+    const saldo = await this.balanceUsd();
+    if (saldo < DEEPSEEK_MIN_BALANCE_USD) {
+      throw new Error(`o saldo do DeepSeek está em US$ ${saldo.toFixed(2)}, abaixo do mínimo de US$ ${DEEPSEEK_MIN_BALANCE_USD.toFixed(2)}; não começo a tarefa`);
+    }
+    return saldo;
   }
 }
