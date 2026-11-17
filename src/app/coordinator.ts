@@ -6,17 +6,28 @@
 // - Tarefa de código nunca é feita pelo modelo local (§12, teste 4): vai para o Claude/Codex numa worktree.
 // - Nada é aprovado/cancelado por palpite do modelo: esses intents só vêm das regras do roteador.
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Intent, LocalLlm, Memory, ModelRouter } from '../core/interfaces.ts';
-import type { ConversationTurn, Language, Project, Task } from '../core/types.ts';
-import { FINAL_TASK_STATUSES } from '../core/types.ts';
+import type { ConversationTurn, Job, JobKind, Language, Project, Task } from '../core/types.ts';
+import { FINAL_JOB_STATUSES, FINAL_TASK_STATUSES } from '../core/types.ts';
 import type { ResearchAgent } from '../agents/research.ts';
 import { QuotaError } from '../agents/research.ts';
 import { buildSharedContext } from '../agents/shared-context.ts';
 import type { ChatAgent } from '../agents/chat.ts';
 import { diffStat, otherAgent, type TaskScheduler } from '../agents/scheduler.ts';
-import { detectLanguage, normalize, ruleIntent } from '../router/router.ts';
+import type { JobRunner } from '../jobs/runner.ts';
+import {
+  buildCampaignDraft, buildPausedCampaign, describeDraft, type MetaAdsWriter,
+} from '../ads/campaign.ts';
+import type { CampaignInsights, InsightsPeriod, MetaInsightsReader } from '../ads/meta-reader.ts';
+import type { OfferLinksStore } from '../lowticket/links.ts';
+import type { OfferProposal } from '../radar/offer.ts';
+import { detectLanguage, jobNumberIn, normalize, ruleIntent } from '../router/router.ts';
 import { describePlan, detectRunner, findFolders, WindowLauncher, type FolderHit, type Launcher, type RunPlan } from '../tools/projects.ts';
+import {
+  applyOfferEdit, approveOffer, buildOfferContext, buildProposalContext, rejectOffer,
+  type RadarConversationStore,
+} from '../radar/conversation.ts';
 
 export interface Reply {
   text: string;
@@ -64,6 +75,71 @@ const LANGUAGE_REMINDER: Record<Language, string> = {
 
 const say = (lang: Language, pt: string, en: string) => (lang === 'en' ? en : pt);
 
+/** Rótulo falado do tipo de trabalho: "Radar 3", "Vídeo 2". */
+function jobLabel(kind: JobKind | null, language: Language): string {
+  if (kind === 'radar') return 'Radar';
+  if (kind === 'video') return language === 'en' ? 'Video' : 'Vídeo';
+  if (kind === 'lowticket') return language === 'en' ? 'Product' : 'Produto';
+  if (kind === 'campanha') return language === 'en' ? 'Campaign' : 'Campanha';
+  return language === 'en' ? 'Job' : 'Trabalho';
+}
+
+/** Nome do trabalho no meio da frase: "Comecei o vídeo 3", "Retomei o radar 2". */
+function jobNoun(kind: 'radar' | 'video' | 'lowticket', language: Language): string {
+  if (kind === 'radar') return 'radar';
+  if (kind === 'lowticket') return language === 'en' ? 'product' : 'produto';
+  return language === 'en' ? 'video' : 'vídeo';
+}
+
+/** Pasta de dados do NIGHT (mesma do bootstrap); caminho exibido sempre com barras normais. */
+export function nightDataRoot(): string {
+  return (process.env.NIGHT_DATA ?? 'D:/NIGHT-data').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/** Onde fica a folha de prompts do Flow do vídeo, na pasta do número falado ("vídeo 3" → flow-import/3). */
+function flowPromptPath(job: Job): string {
+  return `${nightDataRoot()}/flow-import/${job.number}/prompts-flow.txt`;
+}
+
+/** Pedido repetido no mesmo minuto cai na mesma idempotencyKey: não cria outro trabalho. */
+function jobIdempotencyKey(kind: JobKind, text: string): string {
+  const minute = new Date().toISOString().slice(0, 16); // data/hora truncada no minuto (UTC)
+  return createHash('sha256').update(`${kind}|${normalize(text)}|${minute}`).digest('hex');
+}
+
+/** Quando o evento aconteceu, em formato curto para a voz. */
+function whenSpoken(iso: string, language: Language): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleString(language === 'en' ? 'en-US' : 'pt-BR',
+      { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+/** Número no formato local: 3200 → "3.200"; 45.2 com 2 casas → "45,20". */
+function localNumber(value: number, language: Language, casas = 0): string {
+  return value.toLocaleString(language === 'en' ? 'en-US' : 'pt-BR', {
+    minimumFractionDigits: casas, maximumFractionDigits: casas,
+  });
+}
+
+/** Últimos 7 dias, contando hoje: de = hoje - 6, até = hoje (datas de calendário, sem hora). */
+function lastSevenDays(now = new Date()): InsightsPeriod {
+  const dia = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const ate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return { de: dia(new Date(ate.getTime() - 6 * 86_400_000)), ate: dia(ate) };
+}
+
+/** Status da Meta em palavra falada (PAUSED → pausada); desconhecido fica em minúsculas. */
+function statusSpoken(status: string, language: Language): string {
+  const s = status.toLowerCase();
+  if (language === 'en') return s;
+  const traduzido: Record<string, string> = {
+    paused: 'pausada', active: 'ativa', inactive: 'inativa', archived: 'arquivada',
+  };
+  return traduzido[s] ?? s;
+}
+
 /** A resposta vai ser falada: o Qwen 1.7B põe emoji e markdown mesmo mandado não pôr. */
 export function forSpeech(text: string): string {
   return text
@@ -88,29 +164,91 @@ export function dropRepeats(reply: string, previous: string[]): string {
 
 const splitSentences = (t: string) => t.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
 
+/** Dependências opcionais do coordenador: tudo com um padrão seguro quando não vier. */
+export interface CoordinatorOptions {
+  /** Em ordem de preferência; o próximo só entra se o anterior falhar ou estiver no limite. */
+  researchers?: ResearchAgent[];
+  /** Executor das tarefas de código; sem ele, pedido de código só fica registrado. */
+  tasks?: TaskScheduler;
+  /** Conversa normal (alternando); vazio = só o Qwen local. */
+  chatters?: ChatAgent[];
+  /** Reservas pagas (DeepSeek): entram depois dos agentes da vez e antes do Qwen local. */
+  reserves?: ChatAgent[];
+  researchReserves?: ResearchAgent[];
+  /** Abre o projeto numa janela própria (só depois do "pode" do Joel). */
+  launcher?: Launcher;
+  /** Procura de pastas (trocável nos testes). */
+  folderSearch?: (spoken: string) => FolderHit[];
+  /** Radar ligado ao banco; sem ele, os comandos de oferta só avisam que falta banco. */
+  radar?: RadarConversationStore;
+  /** Executores por tipo: sem runner nesta janela, cancelar não pode fingir que parou. */
+  jobRunners?: Partial<Record<WorkKind, JobRunner>>;
+  /** Links de cada oferta (página, checkout, imagens): só o Joel sabe onde publicou (L03/M05). */
+  links?: OfferLinksStore;
+  /**
+   * Montagem de campanha na Meta (M04). Sem writer ou sem conta, o NIGHT explica o que falta.
+   * O writer só cria PAUSADO; ativar fica com o Joel no Gerenciador.
+   */
+  campaign?: { writer: MetaAdsWriter; adAccountId: string | null };
+  /**
+   * Leitura do desempenho pelo MCP da Meta (M07). Sem ele, "como está a campanha da oferta 2?"
+   * explica que falta o conector; nada é inventado no lugar dos números.
+   */
+  campaignReader?: MetaInsightsReader;
+}
+
+/** Trabalhos que o coordenador cria e acompanha pela conversa. */
+type WorkKind = 'radar' | 'video' | 'lowticket';
+
 export class NightCoordinator {
   private history: ConversationTurn[] = [];
   /** "Salva uma ideia para o Abstrike" sem a ideia: a próxima fala é a ideia. */
   private pendingIdea: { projectId: string | null } | null = null;
+  private readonly researchers: ResearchAgent[];
+  /** Executor das tarefas de código; sem ele, pedido de código só fica registrado. */
+  private readonly tasks?: TaskScheduler;
+  /** Conversa normal (alternando); vazio = só o Qwen local. */
+  private readonly chatters: ChatAgent[];
+  /** Reservas pagas (DeepSeek): entram depois dos agentes da vez e antes do Qwen local. */
+  private readonly reserves: ChatAgent[];
+  private readonly researchReserves: ResearchAgent[];
+  /** Abre o projeto numa janela própria (só depois do "pode" do Joel). */
+  private readonly launcher: Launcher;
+  /** Procura de pastas (trocável nos testes). */
+  private readonly folderSearch: (spoken: string) => FolderHit[];
+  /** Radar ligado ao banco; sem ele, os comandos de oferta só avisam que falta banco. */
+  private readonly radar?: RadarConversationStore;
+  /** Executores por tipo: sem runner nesta janela, cancelar não pode fingir que parou. */
+  private readonly jobRunners: Partial<Record<WorkKind, JobRunner>>;
+  private readonly links?: OfferLinksStore;
+  private readonly campaign?: { writer: MetaAdsWriter; adAccountId: string | null };
+  private readonly campaignReader?: MetaInsightsReader;
 
   constructor(
     private readonly memory: Memory,
     private readonly router: ModelRouter,
     private readonly llm: LocalLlm,
-    /** Em ordem de preferência; o próximo só entra se o anterior falhar ou estiver no limite. */
-    private readonly researchers: ResearchAgent[] = [],
-    /** Executor das tarefas de código; sem ele, pedido de código só fica registrado. */
-    private readonly tasks?: TaskScheduler,
-    /** Conversa normal (alternando); vazio = só o Qwen local. */
-    private readonly chatters: ChatAgent[] = [],
-    /** Abre o projeto numa janela própria (só depois do "pode" do Joel). */
-    private readonly launcher: Launcher = new WindowLauncher(),
-    /** Procura de pastas (trocável nos testes). */
-    private readonly folderSearch: (spoken: string) => FolderHit[] = (s) => findFolders(s),
-  ) {}
+    opts: CoordinatorOptions = {},
+  ) {
+    this.researchers = opts.researchers ?? [];
+    this.tasks = opts.tasks;
+    this.chatters = opts.chatters ?? [];
+    this.reserves = opts.reserves ?? [];
+    this.researchReserves = opts.researchReserves ?? [];
+    this.launcher = opts.launcher ?? new WindowLauncher();
+    this.folderSearch = opts.folderSearch ?? ((s: string) => findFolders(s));
+    this.radar = opts.radar;
+    this.jobRunners = opts.jobRunners ?? {};
+    this.links = opts.links;
+    this.campaign = opts.campaign;
+    this.campaignReader = opts.campaignReader;
+  }
 
   /** Quando a última pesquisa terminou (para reconhecer continuação). */
   private lastResearchAt = 0;
+
+  /** Última oferta mostrada nesta conversa: "por que ela é boa?" sem número usa esta. */
+  private lastShownOffer: number | null = null;
 
   /** Rodar projeto espera o "pode": é uma ação no PC do Joel. */
   private pendingRun: { plan: RunPlan; title: string; at: number } | null = null;
@@ -177,6 +315,27 @@ export class NightCoordinator {
       case 'coding-task': out = await this.codingTask(intent, language); break;
       case 'cancel': out = await this.cancel(intent, language); break;
       case 'approval': out = await this.approval(intent, language); break;
+      case 'radar-search': out = await this.createWork('radar', text, { query: intent.query }, language); break;
+      case 'video-create': out = await this.createWork('video', text, { topic: intent.topic }, language); break;
+      case 'job-status': ({ text: out, detail } = await this.jobStatus(intent, language)); break;
+      case 'job-cancel': out = await this.cancelJob(intent, language); break;
+      case 'job-resume': out = await this.resumeJob(intent, language); break;
+      case 'offer-show': ({ text: out, detail } = await this.showOffer(intent.number, language)); break;
+      case 'offer-ask': {
+        const r = await this.askOffer(intent, language);
+        out = r.text;
+        // Quem respondeu de fato (chat) vai para o route_log, como na conversa normal.
+        logged = { ...decision, model: r.model, reason: r.reason, usedPremiumQuota: r.premium };
+        break;
+      }
+      case 'offer-edit': out = await this.editOffer(intent, language); break;
+      case 'offer-link': out = await this.setOfferLink(intent, language); break;
+      case 'product-create': out = await this.createProduct(intent.number, text, language); break;
+      case 'campaign-draft': ({ text: out, detail } = await this.campaignDraft(intent.number, language)); break;
+      case 'campaign-build': ({ text: out, detail } = await this.campaignBuild(intent, text, language)); break;
+      case 'campaign-status': ({ text: out, detail } = await this.campaignStatus(intent, language)); break;
+      case 'offer-decision': out = await this.decideJob('radar', intent, language, text); break;
+      case 'video-decision': out = await this.decideJob('video', intent, language, text); break;
       case 'set-project-path': out = await this.setProjectPath(intent, language); break;
       case 'show-diff': ({ text: out, detail } = await this.showDiff(intent, language)); break;
       case 'run-project': out = await this.prepareRun(intent.target, language); break;
@@ -194,24 +353,46 @@ export class NightCoordinator {
    * Conversa: Codex gpt-6-luna e Claude Sonnet ALTERNANDO a cada mensagem (pedido do Joel, 04/11), o outro se
    * o da vez falhar, e o Qwen local só se os dois falharem (sem internet, limite de uso...).
    */
-  private async converse(text: string, language: Language): Promise<{ text: string; model: string; reason: string; premium: boolean }> {
+  private async converse(
+    text: string, language: Language, extraContext?: string,
+  ): Promise<{ text: string; model: string; reason: string; premium: boolean }> {
     const n = this.chatters.length;
     const failures: string[] = [];
+    const history = this.history.slice(-10).map((t) => ({ role: t.role, text: t.text }));
+    let context: string | null = null;
+    const sharedContext = async () => {
+      if (context === null) {
+        const base = await buildSharedContext(this.memory, 'conversa', language);
+        context = extraContext ? `${base}\n\n${extraContext}` : base;
+      }
+      return context;
+    };
     if (n > 0) {
       const start = this.chatTurn++ % n;
-      const context = await buildSharedContext(this.memory, 'conversa', language);
-      const history = this.history.slice(-10).map((t) => ({ role: t.role, text: t.text }));
       for (let i = 0; i < n; i++) {
         const agent = this.chatters[(start + i) % n]!;
         try {
-          const reply = forSpeech(await agent.reply(history, withoutVocative(text), language, context));
+          const reply = forSpeech(await agent.reply(history, withoutVocative(text), language, await sharedContext()));
           if (reply) return { text: reply, model: agent.id, reason: i === 0 ? 'conversa (vez dele)' : `conversa (reserva: ${failures.join('; ')})`, premium: true };
         } catch (err) {
           failures.push(`${agent.id}: ${err instanceof QuotaError ? 'no limite' : (err as Error).message.slice(0, 100)}`);
         }
       }
     }
-    return { text: await this.chat(text, language), model: this.llm.model, reason: failures.length ? `conversa local (falharam: ${failures.join('; ')})` : 'conversa local', premium: false };
+    // Reservas pagas (DeepSeek) entram antes do Qwen: se os agentes da vez falharam, ainda dá para conversar.
+    for (const agent of this.reserves) {
+      try {
+        const reply = forSpeech(await agent.reply(history, withoutVocative(text), language, await sharedContext()));
+        if (reply) {
+          const provider = agent.id.split(':')[0] ?? agent.id;
+          const why = failures.length ? failures.join('; ') : 'agentes da vez não responderam';
+          return { text: reply, model: agent.id, reason: `conversa (reserva ${provider}: ${why})`, premium: true };
+        }
+      } catch (err) {
+        failures.push(`${agent.id}: ${err instanceof QuotaError ? 'no limite' : (err as Error).message.slice(0, 100)}`);
+      }
+    }
+    return { text: await this.chat(text, language, extraContext), model: this.llm.model, reason: failures.length ? `conversa local (falharam: ${failures.join('; ')})` : 'conversa local', premium: false };
   }
 
   private restored = false;
@@ -246,16 +427,22 @@ export class NightCoordinator {
     return { text, language, intent, model };
   }
 
-  private async chat(text: string, language: Language): Promise<string> {
+  private async chat(text: string, language: Language, extraContext?: string): Promise<string> {
     // Histórico curto para o 1.7B: com 6 trocas ele imitava respostas antigas e o formato do Codex
     // ("WEB, 4 de novembro de 2026") e repetia frases (uso real, 04/11). Fonte/data das pesquisas saem.
     const past = this.history.slice(-QWEN_HISTORY_TURNS * 2).map((t) => ({
       role: t.role === 'owner' ? ('user' as const) : ('assistant' as const),
       content: t.role === 'night' ? t.text.replace(/\s*(fonte|source|informa[cç][aã]o (do|da|consultada)|web)[:,]?[^.]*\d{4}\.?$/i, '').trim() : t.text,
     }));
+    // Contexto da oferta é a ÚNICA fonte permitida: dado ausente vira "não está nas fontes", nunca número inventado.
+    const system = extraContext
+      ? `${SYSTEM_PROMPT[language]}\n\nContexto da oferta (dado do NIGHT; responda só com o que estiver aqui):\n` +
+        `${extraContext}\n\nSe a pergunta pedir um dado que não está no contexto, diga que não está nas fontes. ` +
+        'Não invente número, nota, preço nem data; não trate tempo de anúncio como prova de venda.'
+      : SYSTEM_PROMPT[language];
     try {
       const reply = forSpeech(await this.llm.chat([
-        { role: 'system', content: SYSTEM_PROMPT[language] },
+        { role: 'system', content: system },
         ...past,
         // Sem o "Night" de chamamento: senão o 1.7B responde "Bom dia, Night" achando que o Joel é o Night.
         { role: 'user', content: `${LANGUAGE_REMINDER[language]} ${withoutVocative(text)}` },
@@ -267,7 +454,7 @@ export class NightCoordinator {
     }
   }
 
-  /** Tenta cada pesquisador em ordem. Nunca cai para modelo pago por API: só as CLIs da assinatura. */
+  /** Tenta os pesquisadores com internet em ordem; a reserva (DeepSeek, sem internet) só depois. */
   private async research(query: string, language: Language, routeReason: string): Promise<Reply> {
     const failures: string[] = []; // detalhe técnico: vai para o route_log
     const spoken: string[] = []; // curto: vai para a voz
@@ -286,6 +473,28 @@ export class NightCoordinator {
         const quota = err instanceof QuotaError;
         failures.push(`${agent.id}: ${quota ? 'no limite de uso' : (err as Error).message.slice(0, 200)}`);
         const name = agent.id.startsWith('codex') ? 'o Codex' : agent.id.startsWith('claude') ? 'o Claude' : agent.id;
+        spoken.push(say(language, `${name} ${quota ? 'está no limite de uso' : 'deu erro'}`,
+          `${name.replace(/^o /, '')} ${quota ? 'is at its usage limit' : 'failed'}`));
+      }
+    }
+    // Reserva sem internet: responde do que sabe, e a fala avisa que pode estar desatualizado.
+    for (const agent of this.researchReserves) {
+      try {
+        const context = await buildSharedContext(this.memory, agent.id, language);
+        const { answer, ms } = await agent.ask(query, language, context);
+        const spokenAnswer = forSpeech(answer);
+        const warned = say(language,
+          `Sem internet, respondi de cabeça e pode estar desatualizado: ${spokenAnswer}`,
+          `Without internet, I answered from memory and it may be outdated: ${spokenAnswer}`);
+        await this.memory.logRoute({
+          text: query, language, reply: warned,
+          decision: { intent: { kind: 'research', query }, model: agent.id, reason: `${routeReason}; reserva ${agent.id} sem internet; respondeu em ${(ms / 1000).toFixed(0)} s`, usedPremiumQuota: true },
+        });
+        return this.lateReply(language, warned, 'research', agent.id);
+      } catch (err) {
+        const quota = err instanceof QuotaError;
+        failures.push(`${agent.id}: ${quota ? 'no limite de uso' : (err as Error).message.slice(0, 200)}`);
+        const name = agent.id.startsWith('deepseek') ? 'o DeepSeek' : agent.id;
         spoken.push(say(language, `${name} ${quota ? 'está no limite de uso' : 'deu erro'}`,
           `${name.replace(/^o /, '')} ${quota ? 'is at its usage limit' : 'failed'}`));
       }
@@ -344,9 +553,16 @@ export class NightCoordinator {
     const searching = [...this.researching.entries()].map(([q, at]) =>
       say(language, `pesquisando "${q.slice(0, 60)}" há ${Math.round((Date.now() - at) / 1000)} s`, `researching "${q.slice(0, 60)}" for ${Math.round((Date.now() - at) / 1000)} s`));
     const research = searching.length ? say(language, `Ainda tô ${searching.join('; ')}. `, `Still ${searching.join('; ')}. `) : '';
-    if (open.length === 0) return research + say(language, 'Nenhuma tarefa aberta agora.', 'No open tasks right now.');
-    if (research) return research + (await this.taskStatus(open, language));
-    return this.taskStatus(open, language);
+    // Trabalhos de Radar/vídeo aparecem numa linha curta, sem esconder as tarefas de código.
+    const activeJobs = await this.memory.listJobs({ status: ['queued', 'running', 'waiting'] });
+    const jobLine = activeJobs.length
+      ? say(language,
+        ` Trabalhos ativos: ${activeJobs.map((j) => `${jobLabel(j.kind, language)} ${j.number} (${this.jobState(j, language)})`).join(', ')}.`,
+        ` Active jobs: ${activeJobs.map((j) => `${jobLabel(j.kind, language)} ${j.number} (${this.jobState(j, language)})`).join(', ')}.`)
+      : '';
+    if (open.length === 0) return research + say(language, 'Nenhuma tarefa aberta agora.', 'No open tasks right now.') + jobLine;
+    if (research) return research + (await this.taskStatus(open, language)) + jobLine;
+    return (await this.taskStatus(open, language)) + jobLine;
   }
 
   private async taskStatus(open: Task[], language: Language): Promise<string> {
@@ -427,6 +643,613 @@ export class NightCoordinator {
     }
     return say(language, `Cancelei ${targets.length === 1 ? 'a tarefa' : `${targets.length} tarefas`}${this.tasks ? ` (${results.join('; ')})` : ''}.`,
       `Cancelled ${targets.length === 1 ? 'the task' : `${targets.length} tasks`}${this.tasks ? ` (${results.join('; ')})` : ''}.`);
+  }
+
+  /** Registra um trabalho de Radar/vídeo. Não gasta nada nem chama rede: só fica na fila. */
+  private async createWork(
+    kind: WorkKind, text: string, params: Record<string, unknown>, language: Language,
+  ): Promise<string> {
+    const label = jobLabel(kind, language);
+    let created: { job: Job; created: boolean };
+    try {
+      created = await this.memory.createJob({
+        kind, origin: 'texto', idempotencyKey: jobIdempotencyKey(kind, text), params,
+      });
+    } catch (err) {
+      return say(language, `Não registrei o ${label}: deu erro no banco (${(err as Error).message}).`,
+        `I didn't register the ${label}: database error (${(err as Error).message}).`);
+    }
+    const { job } = created;
+    // Com trabalhador nesta janela, o trabalho começa agora, sem segurar a conversa.
+    // Sem ele (outra janela tem a trava), o registro fica na fila como antes.
+    // Pedido repetido só dispara se o trabalho existente ainda está na fila e não há
+    // execução viva: dois laços no mesmo job brigariam nas transições.
+    const runner = this.jobRunners[kind];
+    if (runner && !FINAL_JOB_STATUSES.includes(job.status)
+      && (created.created || (job.status === 'queued' && !runner.isRunning(job.id)))) {
+      this.runJobInBackground(kind, job);
+    }
+    if (!created.created) {
+      return say(language, `O ${label} ${job.number} já está registrado.`, `The ${label} ${job.number} is already registered.`);
+    }
+    const what = kind === 'radar'
+      ? say(language, `ofertas de ${String(params.query ?? '').trim() || 'qualquer nicho'}`,
+        `offers for ${String(params.query ?? '').trim() || 'any niche'}`)
+      : kind === 'lowticket'
+        ? say(language, `PDFs, bônus e página da oferta ${String(params.offerNumber)}`, `PDFs, bonus and page for offer ${String(params.offerNumber)}`)
+        : String(params.topic ?? '').trim() || say(language, 'sem tema', 'no topic');
+    if (runner) {
+      const noun = jobNoun(kind, language);
+      return say(language,
+        `Comecei o ${noun} ${job.number}: ${what}. Pergunte 'como está o ${noun} ${job.number}?'`,
+        `Started ${noun} ${job.number}: ${what}. Ask 'how is ${noun} ${job.number}?'`);
+    }
+    return say(language,
+      `Registrei o ${label} ${job.number}: ${what}. Ainda não há trabalhador ligado, ele fica na fila.`,
+      `Registered ${label} ${job.number}: ${what}. There is no worker connected yet, so it stays queued.`);
+  }
+
+  /**
+   * Dispara o trabalho em segundo plano. O erro do runner já vira estado/evento; aqui só
+   * garantimos que uma falha do próprio log não derrube a conversa.
+   */
+  private runJobInBackground(kind: WorkKind, job: Job): void {
+    const runner = this.jobRunners[kind];
+    if (!runner) return;
+    void runner.run(job.id).catch(async (error: unknown) => {
+      try {
+        await this.memory.addJobEvent(job.id, {
+          eventType: 'error',
+          source: 'runner',
+          message: `falha ao executar em segundo plano: ${(error as Error).message}`,
+        });
+      } catch {
+        // Log é melhor esforço: o pedido do dono não pode falhar por causa dele.
+      }
+    });
+  }
+
+  /** "Continua o vídeo 3": só waiting/retryable voltam a rodar; o resto explica por quê. */
+  private async resumeJob(
+    intent: Extract<Intent, { kind: 'job-resume' }>, language: Language,
+  ): Promise<string> {
+    const noun = jobNoun(intent.jobKind, language);
+    const job = await this.memory.getJobByNumber(intent.jobKind, intent.number);
+    if (!job) {
+      return say(language, `Não achei o ${jobLabel(intent.jobKind, language)} ${intent.number}.`,
+        `I couldn't find ${jobLabel(intent.jobKind, language)} ${intent.number}.`);
+    }
+    if (job.status !== 'waiting' && job.status !== 'retryable') {
+      return say(language,
+        `Não retomei o ${noun} ${job.number}: ${this.jobState(job, language)}.`,
+        `I didn't resume ${noun} ${job.number}: ${this.jobState(job, language)}.`);
+    }
+    const runner = this.jobRunners[intent.jobKind];
+    if (!runner) {
+      return say(language,
+        `Não retomei o ${noun} ${job.number}: esta janela do Night não executa trabalhos.`,
+        `I didn't resume ${noun} ${job.number}: this Night window does not run jobs.`);
+    }
+    // "Continua" repetido não pode abrir um segundo laço no mesmo trabalho.
+    if (runner.isRunning(job.id)) {
+      return say(language, `O ${noun} ${job.number} já está rodando.`,
+        `The ${noun} ${job.number} is already running.`);
+    }
+    this.runJobInBackground(intent.jobKind, job);
+    return say(language, `Retomei o ${noun} ${job.number}.`, `Resumed ${noun} ${job.number}.`);
+  }
+
+  /** Estado do trabalho em linguagem falada (F07). */
+  private jobState(job: Job, language: Language): string {
+    const en = language === 'en';
+    const err = (job.error ?? '').slice(0, 120);
+    switch (job.status) {
+      case 'queued': return en ? 'is queued' : 'está na fila';
+      case 'running': return en ? 'is running' : 'está rodando';
+      case 'waiting': return en ? `is waiting for ${job.waitingFor ?? 'something'}` : `está esperando ${job.waitingFor ?? 'algo'}`;
+      case 'retryable': return en ? 'stopped with a recoverable error' : 'parou com erro recuperável';
+      case 'succeeded': return en ? 'is ready' : 'está pronto';
+      case 'failed': return en ? `failed: ${err || 'no detail'}` : `falhou: ${err || 'sem detalhe'}`;
+      case 'cancelled': return en ? 'was cancelled' : 'foi cancelado';
+    }
+  }
+
+  /** O que fazer para sair da espera: caminho do Flow, modo voz, fonte de anúncios ou chave do DeepSeek. */
+  private waitingExplanation(job: Job, language: Language): string | null {
+    if (job.status !== 'waiting') return null;
+    switch (job.waitingFor) {
+      case 'flow':
+        return say(language, `Faltam imagens do Flow: veja ${flowPromptPath(job)}`,
+          `Missing Flow images: see ${flowPromptPath(job)}`);
+      case 'voz':
+        return say(language, 'Falta o serviço de voz: rode "pnpm night:voz" para narrar.',
+          'The voice service is off: run "pnpm night:voz" to narrate.');
+      case 'fonte':
+        return say(language, 'Falta provar a fonte de anúncios (R01); nada foi coletado.',
+          'The ad source is not proven yet (R01); nothing was collected.');
+      case 'gerador':
+        return say(language, 'Falta a chave do DeepSeek para gerar o texto.',
+          'The DeepSeek key is missing to generate the text.');
+      default:
+        return null;
+    }
+  }
+
+  /** Status do trabalho vem do banco, nunca do modelo: com número, estado + último evento; sem, resumo. */
+  private async jobStatus(
+    intent: Extract<Intent, { kind: 'job-status' }>, language: Language,
+  ): Promise<{ text: string; detail?: string }> {
+    const en = language === 'en';
+    if (intent.number !== null) {
+      const kind = intent.jobKind;
+      if (!kind) {
+        return { text: say(language, 'Fala o tipo junto: "status do radar 2" ou "vídeo 3".',
+          'Say the type too: "radar 2" or "video 3".') };
+      }
+      const job = await this.memory.getJobByNumber(kind, intent.number);
+      if (!job) {
+        return { text: say(language, `Não achei o ${jobLabel(kind, language)} ${intent.number}.`,
+          `I couldn't find ${jobLabel(kind, language)} ${intent.number}.`) };
+      }
+      const events = await this.memory.listJobEvents(job.id);
+      const last = events[events.length - 1];
+      const waiting = this.waitingExplanation(job, language);
+      const text = `${jobLabel(kind, language)} ${job.number} ${this.jobState(job, language)}.` +
+        (waiting ? ` ${waiting}` : '') +
+        (last ? ` ${en ? 'Last event' : 'Último evento'}: ${last.message} (${whenSpoken(last.timestamp, language)}).` : '');
+      const detail = [
+        `${jobLabel(kind, language)} ${job.number} — ${job.status}`,
+        ...events.map((e) => `${e.timestamp} ${e.eventType} [${e.source}] ${e.message}`),
+        ...(job.error ? [`${en ? 'error' : 'erro'}: ${job.error}`] : []),
+        ...(job.artifactRef ? [`${en ? 'artifact' : 'artefato'}: ${job.artifactRef}`] : []),
+      ].join('\n');
+      return { text, detail };
+    }
+    const kind = intent.jobKind;
+    const jobs = (await this.memory.listJobs(kind ? { kind } : {})).slice(0, 3);
+    if (jobs.length === 0) {
+      return { text: kind
+        ? say(language, `Não achei nenhum ${jobLabel(kind, language)} ainda.`, `I couldn't find any ${jobLabel(kind, language)} yet.`)
+        : say(language, 'Não tem trabalho registrado ainda.', 'No jobs registered yet.') };
+    }
+    const parts = jobs.map((j) => {
+      const base = `${jobLabel(j.kind, language)} ${j.number} ${this.jobState(j, language)}`;
+      const waiting = this.waitingExplanation(j, language);
+      return waiting ? `${base}. ${waiting}` : base;
+    });
+    const details: string[] = [];
+    for (const j of jobs) {
+      const events = await this.memory.listJobEvents(j.id);
+      const last = events[events.length - 1];
+      details.push(`${jobLabel(j.kind, language)} ${j.number} — ${j.status}${last ? `: ${last.message}` : ''}`);
+    }
+    return {
+      text: say(language, `Últimos: ${parts.join('; ')}.`, `Latest: ${parts.join('; ')}.`),
+      detail: details.join('\n'),
+    };
+  }
+
+  /** Cancela o trabalho pelo número; já final só informa o estado, sem mudar nada. */
+  private async cancelJob(intent: Extract<Intent, { kind: 'job-cancel' }>, language: Language): Promise<string> {
+    const label = jobLabel(intent.jobKind, language);
+    const job = await this.memory.getJobByNumber(intent.jobKind, intent.number);
+    if (!job) return say(language, `Não achei o ${label} ${intent.number}.`, `I couldn't find ${label} ${intent.number}.`);
+    if (FINAL_JOB_STATUSES.includes(job.status)) {
+      return say(language, `O ${label} ${intent.number} ${this.jobState(job, language)}; não há o que cancelar.`,
+        `${label} ${intent.number} ${this.jobState(job, language)}; there is nothing to cancel.`);
+    }
+
+    const runner = this.jobRunners[intent.jobKind];
+    if (runner) {
+      let result: Awaited<ReturnType<JobRunner['cancel']>>;
+      try {
+        result = await runner.cancel(job.id);
+      } catch (err) {
+        return say(language, `Não consegui pedir o cancelamento do ${label} ${intent.number}: ${(err as Error).message}.`,
+          `I couldn't request cancellation of ${label} ${intent.number}: ${(err as Error).message}.`);
+      }
+      // Sem a confirmação do trabalhador, o processo pode seguir: nunca dizer que parou.
+      if (!result.confirmed) {
+        const detail = (result.detail ?? '').trim().slice(0, 120) || say(language, 'sem detalhe', 'no detail');
+        return say(language,
+          `Pedi para cancelar o ${label} ${intent.number}, mas o trabalhador não confirmou: ${detail}. Ele fica marcado para tentar de novo.`,
+          `I asked to cancel ${label} ${intent.number}, but the worker did not confirm: ${detail}. It stays marked to try again.`);
+      }
+      return say(language, `Cancelei o ${label} ${intent.number}.`, `Cancelled ${label} ${intent.number}.`);
+    }
+
+    // Sem runner neste processo não há como parar um processo vivo: só marcar é honesto, mas nunca
+    // dizer que o trabalhador parou. Fila/retryable/waiting não estão rodando, então cancelar basta.
+    try {
+      await this.memory.transitionJob(job.id, 'cancelled', {
+        source: 'owner',
+        message: job.status === 'running'
+          ? 'cancelado pelo Joel; nenhum trabalhador ativo neste NIGHT'
+          : 'cancelado pelo Joel',
+      });
+    } catch (err) {
+      return say(language, `Não consegui cancelar o ${label} ${intent.number}: ${(err as Error).message}.`,
+        `I couldn't cancel ${label} ${intent.number}: ${(err as Error).message}.`);
+    }
+    if (job.status === 'running') {
+      return say(language, `Marquei o ${label} ${intent.number} como cancelado; nenhum trabalhador ativo neste NIGHT.`,
+        `I marked ${label} ${intent.number} as cancelled; no active worker in this NIGHT.`);
+    }
+    return say(language, `Cancelei o ${label} ${intent.number}.`, `Cancelled ${label} ${intent.number}.`);
+  }
+
+  /** Sem banco do Radar, nenhum comando de oferta inventa dado: só avisa que falta ligação. */
+  private noRadar(language: Language): string {
+    return say(language, 'O Radar ainda não tem banco ligado.', 'The Radar has no database connected yet.');
+  }
+
+  /** "Não achei a oferta N." no idioma da conversa. */
+  private offerNotFound(number: number, language: Language): string {
+    return say(language, `Não achei a oferta ${number}.`, `I couldn't find offer ${number}.`);
+  }
+
+  /** "Qual oferta?" quando a frase não traz número e não há uma mostrada antes. */
+  private offerNumberMissing(language: Language): string {
+    return say(language, 'Qual oferta? Fala o número, por exemplo "oferta 2".',
+      'Which offer? Say the number, like "offer 2".');
+  }
+
+  /** Resposta curta para voz (nome, público, nota, status); o contexto completo vai na tela. */
+  private async showOffer(number: number, language: Language): Promise<{ text: string; detail?: string }> {
+    if (!this.radar) return { text: this.noRadar(language) };
+    const offer = await this.radar.getOffer(number);
+    if (!offer) return { text: this.offerNotFound(number, language) };
+    this.lastShownOffer = number;
+    const proposta = offer.proposal;
+    const nome = typeof proposta.nome === 'string' && proposta.nome.trim() ? proposta.nome.trim() : `oferta ${number}`;
+    const publico = typeof proposta.publico === 'string' && proposta.publico.trim()
+      ? proposta.publico.trim() : say(language, 'público não registrado', 'audience not recorded');
+    const candidato = offer.candidateId ? await this.radar.getCandidate(offer.candidateId) : null;
+    // Sem nota no banco, diz "sem nota"; nunca inventa um número de triagem.
+    const nota = candidato?.score
+      ? say(language, `nota de triagem ${candidato.score.nota}${candidato.score.parcial ? ' (parcial)' : ''}`,
+        `screening score ${candidato.score.nota}${candidato.score.parcial ? ' (partial)' : ''}`)
+      : say(language, 'sem nota de triagem', 'no screening score');
+    const text = say(language,
+      `Oferta ${number} versão ${offer.version}: ${nome}. Público: ${publico}. ${nota}. Status: ${offer.status}.`,
+      `Offer ${number} version ${offer.version}: ${nome}. Audience: ${publico}. ${nota}. Status: ${offer.status}.`);
+    const detail = await buildOfferContext(this.radar, number);
+    return { text, detail };
+  }
+
+  // ---------- Low-ticket e campanha (seções L e M) ----------
+
+  /** Número dito ou a última oferta mostrada; null quando não dá para saber qual. */
+  private offerNumberOr(number: number | null): number | null {
+    return number ?? this.lastShownOffer;
+  }
+
+  private askOfferNumber(language: Language): string {
+    return say(language, 'De qual oferta? Diga o número, por exemplo "oferta 2".', 'Which offer? Say the number, e.g. "offer 2".');
+  }
+
+  /** "A página/o checkout/as imagens da oferta 2 é…": guarda o link que só o Joel sabe. */
+  private async setOfferLink(intent: Extract<Intent, { kind: 'offer-link' }>, language: Language): Promise<string> {
+    if (!this.links) return say(language, 'Os links das ofertas ainda não têm banco ligado.', 'Offer links have no database connected yet.');
+    const number = this.offerNumberOr(intent.number);
+    if (number === null) return this.askOfferNumber(language);
+    try {
+      const l = await this.links.set(number, intent.field, intent.field === 'imagens' ? intent.urls : intent.urls[0]!);
+      const oque = intent.field === 'imagens'
+        ? say(language, `${l.imagens.length} imagem(ns)`, `${l.imagens.length} image(s)`)
+        : intent.field === 'checkout' ? 'checkout' : say(language, 'página', 'page');
+      return say(language, `Guardei ${oque} da oferta ${number}.`, `Saved the ${oque} for offer ${number}.`);
+    } catch (err) {
+      return say(language, `Não guardei: ${(err as Error).message}.`, `Not saved: ${(err as Error).message}.`);
+    }
+  }
+
+  /** "Gera o produto da oferta 2": só para oferta aprovada (o trabalhador confere de novo). */
+  private async createProduct(numberSaid: number | null, text: string, language: Language): Promise<string> {
+    if (!this.radar) return this.noRadar(language);
+    const number = this.offerNumberOr(numberSaid);
+    if (number === null) return this.askOfferNumber(language);
+    const offer = await this.radar.getOffer(number);
+    if (!offer) return this.offerNotFound(number, language);
+    if (offer.status !== 'aprovada') {
+      return say(language,
+        `A oferta ${number} está em ${offer.status}. Aprove antes ("aprova a oferta ${number}") para eu gerar o produto.`,
+        `Offer ${number} is ${offer.status}. Approve it first ("approve offer ${number}") so I can build the product.`);
+    }
+    return this.createWork('lowticket', `produto oferta ${number} v${offer.version} ${text}`, { offerNumber: number }, language);
+  }
+
+  /** Proposta da versão mais nova + links: base do rascunho da campanha. */
+  private async draftFor(number: number) {
+    const offer = await this.radar!.getOffer(number);
+    if (!offer) return null;
+    const links = this.links ? await this.links.get(number) : { paginaUrl: null, imagens: [] as string[] };
+    const draft = buildCampaignDraft(offer.proposal as unknown as OfferProposal, {
+      offerNumber: number, offerVersion: offer.version, destinoUrl: links.paginaUrl, imagens: links.imagens,
+    });
+    return { offer, draft };
+  }
+
+  /** "Monta a campanha da oferta 2": mostra o rascunho e o que falta; não chama a Meta (M03). */
+  private async campaignDraft(numberSaid: number | null, language: Language): Promise<{ text: string; detail?: string }> {
+    if (!this.radar) return { text: this.noRadar(language) };
+    const number = this.offerNumberOr(numberSaid);
+    if (number === null) return { text: this.askOfferNumber(language) };
+    const found = await this.draftFor(number);
+    if (!found) return { text: this.offerNotFound(number, language) };
+    if (found.offer.status !== 'aprovada') {
+      return { text: say(language, `A oferta ${number} ainda não foi aprovada; a campanha só sai de oferta aprovada.`,
+        `Offer ${number} is not approved yet; campaigns only come from approved offers.`) };
+    }
+    const { voz, tela } = describeDraft(found.draft);
+    return { text: voz, detail: tela };
+  }
+
+  /**
+   * "Aprovo montar a campanha da oferta 2 com R$ 20 por dia": cria PAUSADA na Meta (M04). O trabalho
+   * 'campanha' tem chave fixa por oferta e versão, então repetir a frase retoma em vez de duplicar.
+   */
+  private async campaignBuild(
+    intent: Extract<Intent, { kind: 'campaign-build' }>, text: string, language: Language,
+  ): Promise<{ text: string; detail?: string }> {
+    if (!this.radar) return { text: this.noRadar(language) };
+    if (intent.number === null) return { text: this.askOfferNumber(language) };
+    if (intent.budgetBRL === null) {
+      return { text: say(language,
+        `Preciso do valor por dia na frase, por exemplo "aprovo montar a campanha da oferta ${intent.number} com R$ 20 por dia".`,
+        `I need the daily amount, e.g. "approve building the campaign for offer ${intent.number} with R$ 20 per day".`) };
+    }
+    if (!this.campaign) {
+      return { text: say(language, 'O conector da Meta ainda não está ligado no NIGHT (veja M01 no plano).',
+        'The Meta connector is not set up in NIGHT yet (see M01 in the plan).') };
+    }
+    if (!this.campaign.adAccountId) {
+      return { text: say(language, 'Falta a conta de anúncios: defina NIGHT_META_AD_ACCOUNT (ex.: act_123) e reinicie.',
+        'Missing the ad account: set NIGHT_META_AD_ACCOUNT (e.g. act_123) and restart.') };
+    }
+    const found = await this.draftFor(intent.number);
+    if (!found) return { text: this.offerNotFound(intent.number, language) };
+    if (found.offer.status !== 'aprovada') {
+      return { text: say(language, `A oferta ${intent.number} não está aprovada; não monto campanha.`,
+        `Offer ${intent.number} is not approved; I won't build a campaign.`) };
+    }
+    const { job } = await this.memory.createJob({
+      kind: 'campanha', origin: 'texto',
+      idempotencyKey: `campanha:oferta:${intent.number}:v${found.offer.version}`,
+      params: { offerNumber: intent.number, offerVersion: found.offer.version },
+    });
+    // Repetir a frase depois de uma parada (retryable) retoma do que já foi criado: os efeitos têm chave.
+    if (job.status === 'queued' || job.status === 'retryable') {
+      await this.memory.transitionJob(job.id, 'running', { source: 'owner', message: 'montagem aprovada pelo Joel' });
+    }
+    const r = await buildPausedCampaign(
+      { memory: this.memory, writer: this.campaign.writer, adAccountId: this.campaign.adAccountId },
+      { jobId: job.id, draft: found.draft, approval: { offerNumber: intent.number, orcamentoDiarioBRL: intent.budgetBRL, frase: text } },
+    );
+    const atual = await this.memory.getJob(job.id);
+    if (r.status === 'criada') {
+      if (atual?.status === 'running') await this.memory.transitionJob(job.id, 'succeeded', { source: 'meta', message: 'campanha criada pausada' });
+      return {
+        text: say(language,
+          `Montei a campanha da oferta ${intent.number} PAUSADA: ${r.adIds.length} anúncio(s), R$ ${intent.budgetBRL} por dia. Para ir ao ar, ative você no Gerenciador de Anúncios.`,
+          `Built the campaign for offer ${intent.number} PAUSED: ${r.adIds.length} ad(s), R$ ${intent.budgetBRL} per day. To go live, activate it yourself in Ads Manager.`),
+        detail: `campanha ${r.campaignId} · conjunto ${r.adSetId} · anúncios ${r.adIds.join(', ')}${r.reaproveitada ? ' (campanha já existia, reaproveitada)' : ''}`,
+      };
+    }
+    if (r.status === 'recusada') {
+      if (atual?.status === 'running') await this.memory.transitionJob(job.id, 'failed', { source: 'owner', message: 'montagem recusada', error: r.motivo });
+      return { text: say(language, `Não montei: ${r.motivo}.`, `Not built: ${r.motivo}.`) };
+    }
+    if (atual?.status === 'running') await this.memory.transitionJob(job.id, 'retryable', { source: 'meta', message: 'montagem parada', error: r.motivo });
+    return {
+      text: say(language, `Parei a montagem: ${r.motivo}`, `Stopped building: ${r.motivo}`),
+      detail: Object.entries(r.criados).map(([k, v]) => `${k}: ${v}`).join('\n') || undefined,
+    };
+  }
+
+  /** Id da campanha gravado no efeito 'meta:campaign' ("campanha id=..."): a fonte é o banco, não a conversa. */
+  private async campaignIdOf(jobId: string): Promise<string | null> {
+    const ev = (await this.memory.listJobEvents(jobId)).find((e) => e.effectKey === 'meta:campaign');
+    if (!ev) return null;
+    return /id=(\S+)/.exec(ev.message)?.[1] ?? null;
+  }
+
+  /**
+   * "Como está a campanha da oferta 2?": acha o trabalho 'campanha' da oferta, tira o id do efeito
+   * 'meta:campaign' e lê os números na Meta (só leitura). Sem montagem ou sem conector, diz o que
+   * falta. Venda e lucro não vêm da Meta: o NIGHT nunca calcula isso a partir dos anúncios.
+   */
+  private async campaignStatus(
+    intent: Extract<Intent, { kind: 'campaign-status' }>, language: Language,
+  ): Promise<{ text: string; detail?: string }> {
+    const number = intent.number;
+    if (number === null) return { text: this.askOfferNumber(language) };
+
+    // Jobs da oferta vêm do mais novo para o mais antigo; vale o primeiro com campanha de verdade.
+    let campaignId: string | null = null;
+    for (const job of (await this.memory.listJobs({ kind: 'campanha' })).filter((j) => j.params.offerNumber === number)) {
+      campaignId = await this.campaignIdOf(job.id);
+      if (campaignId) break;
+    }
+    if (!campaignId) {
+      return { text: say(language, `A campanha da oferta ${number} ainda não foi montada.`,
+        `The campaign for offer ${number} hasn't been built yet.`) };
+    }
+    if (!this.campaignReader) {
+      return { text: say(language,
+        'O conector de leitura da Meta ainda não está ligado no NIGHT (M01); sem ele não leio os números.',
+        'The Meta read connector is not set up in NIGHT yet (M01); without it I cannot read the numbers.') };
+    }
+
+    const periodo = lastSevenDays();
+    let insights: CampaignInsights;
+    try {
+      insights = await this.campaignReader.insights(campaignId, periodo);
+    } catch (err) {
+      return { text: say(language, `Não consegui ler os números da Meta: ${(err as Error).message.slice(0, 300)}.`,
+        `I could not read the numbers from Meta: ${(err as Error).message.slice(0, 300)}.`) };
+    }
+
+    const en = language === 'en';
+    const reais = (v: number) => `R$ ${localNumber(v, language, 2)}`;
+    // Voz curta: só o que a Meta devolveu, na ordem do exemplo do Joel.
+    const partes: string[] = [];
+    if (insights.gastoBRL !== null) partes.push(en ? `${reais(insights.gastoBRL)} spent` : `${reais(insights.gastoBRL)} gastos`);
+    if (insights.impressoes !== null) partes.push(`${localNumber(insights.impressoes, language)} ${en ? 'impressions' : 'impressões'}`);
+    if (insights.cliques !== null) partes.push(`${localNumber(insights.cliques, language)} ${en ? 'clicks' : 'cliques'}`);
+    if (insights.ctr !== null) partes.push(`CTR ${localNumber(insights.ctr, language, 1)}%`);
+    const numeros = partes.length
+      ? partes.join(', ')
+      : say(language, 'a Meta não devolveu números', 'Meta returned no numbers');
+    const status = insights.status ? ` Status: ${statusSpoken(insights.status, language)}.` : '';
+    const text = say(language,
+      `Campanha da oferta ${number}, últimos 7 dias: ${numeros}.${status}`,
+      `Campaign for offer ${number}, last 7 days: ${numeros}.${status}`);
+
+    const naoInformado = say(language, 'não informado', 'not reported');
+    const numero = (v: number | null, casas = 0) => (v === null ? naoInformado : localNumber(v, language, casas));
+    // Data da leitura com ano: um relatório lido depois precisa dizer de quando são os números.
+    const lido = new Date(insights.lidoEm);
+    const lidoEm = Number.isNaN(lido.getTime())
+      ? insights.lidoEm
+      : lido.toLocaleString(en ? 'en-US' : 'pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+    const linhas = [
+      `${say(language, 'Campanha da oferta', 'Campaign for offer')} ${number} — id ${insights.campaignId}` +
+        (insights.status ? ` · ${statusSpoken(insights.status, language)}` : ''),
+      `${say(language, 'Período', 'Period')}: ${insights.periodo.de} ${say(language, 'a', 'to')} ${insights.periodo.ate}` +
+        ` · ${say(language, 'lido em', 'read at')} ${lidoEm}`,
+      `${say(language, 'Gasto', 'Spend')}: ${insights.gastoBRL === null ? naoInformado : reais(insights.gastoBRL)}`,
+      `${say(language, 'Impressões', 'Impressions')}: ${numero(insights.impressoes)}`,
+      `${say(language, 'Cliques', 'Clicks')}: ${numero(insights.cliques)}`,
+      `CTR: ${insights.ctr === null ? naoInformado : `${localNumber(insights.ctr, language, 1)}%`}`,
+      `CPC: ${insights.cpc === null ? naoInformado : reais(insights.cpc)}`,
+    ];
+    if (insights.alcance !== undefined) linhas.push(`${say(language, 'Alcance', 'Reach')}: ${numero(insights.alcance)}`);
+    if (insights.compras !== undefined) {
+      linhas.push(`${say(language, 'Compras atribuídas pela Meta', 'Purchases attributed by Meta')}: ${numero(insights.compras)}`);
+    }
+    linhas.push(say(language,
+      'Vendas e lucro não vêm da Meta: me diga as vendas reais que eu comparo com esses números.',
+      'Sales and profit do not come from Meta: tell me the real sales and I compare them with these numbers.'));
+    return { text, detail: linhas.join('\n') };
+  }
+
+  /** Pergunta sobre a oferta: usa a última mostrada quando não há número e responde com o chat existente. */
+  private async askOffer(
+    intent: Extract<Intent, { kind: 'offer-ask' }>, language: Language,
+  ): Promise<{ text: string; model: string; reason: string; premium: boolean }> {
+    if (!this.radar) {
+      return { text: this.noRadar(language), model: 'rules', reason: 'Radar sem banco ligado', premium: false };
+    }
+    const number = intent.number ?? this.lastShownOffer;
+    if (number === null) {
+      return { text: this.offerNumberMissing(language), model: 'rules', reason: 'oferta sem número', premium: false };
+    }
+    const offer = await this.radar.getOffer(number);
+    if (!offer) {
+      return { text: this.offerNotFound(number, language), model: 'rules', reason: 'oferta não encontrada', premium: false };
+    }
+    this.lastShownOffer = number;
+    // O contexto é a única fonte: o modelo não pode completar número, nota ou preço de cabeça.
+    const context = await buildOfferContext(this.radar, number);
+    const r = await this.converse(intent.question, language, context);
+    return { text: r.text, model: r.model, reason: `${r.reason} (oferta ${number})`, premium: r.premium };
+  }
+
+  /** Correção por voz: cria versão nova; se a proposta ficar inválida, não grava e mostra os erros. */
+  private async editOffer(intent: Extract<Intent, { kind: 'offer-edit' }>, language: Language): Promise<string> {
+    if (!this.radar) return this.noRadar(language);
+    const number = intent.number ?? this.lastShownOffer;
+    if (number === null) return this.offerNumberMissing(language);
+    const offer = await this.radar.getOffer(number);
+    if (!offer) return this.offerNotFound(number, language);
+    const ctx = await buildProposalContext(this.radar, offer);
+    const resultado = await applyOfferEdit(this.radar, number, { campo: intent.campo, valor: intent.valor }, ctx);
+    this.lastShownOffer = number;
+    if (!resultado.ok) {
+      const erros = resultado.errors.map((e) => `${e.campo}: ${e.problema}`).join('; ');
+      return say(language, `Não gravei a edição da oferta ${number}: ${erros}.`,
+        `I did not save the edit to offer ${number}: ${erros}.`);
+    }
+    return say(language,
+      `Oferta ${number} agora está na versão ${resultado.offer.version} (antes ${resultado.previousVersion}), com ${intent.campo} atualizado.`,
+      `Offer ${number} is now version ${resultado.offer.version} (was ${resultado.previousVersion}), with ${intent.campo} updated.`);
+  }
+
+  /**
+   * Decisão de oferta/vídeo por número. Oferta aprova/rejeita só em radar_offers (o evento vai para o
+   * job do candidato); vídeo usa o job 'succeeded'. Não cria Approval de merge, não publica e não gasta.
+   */
+  private async decideJob(
+    kind: 'radar' | 'video',
+    intent: Extract<Intent, { kind: 'offer-decision' }> | Extract<Intent, { kind: 'video-decision' }>,
+    language: Language,
+    rawText = '',
+  ): Promise<string> {
+    const noun = kind === 'radar' ? say(language, 'oferta', 'offer') : say(language, 'vídeo', 'video');
+    const article = kind === 'radar' ? 'a' : 'o';
+    const ready = kind === 'radar' ? 'pronta' : 'pronto';
+    // Merge citado junto com oferta/vídeo: pergunta qual dos dois e não grava nada (nem evento, nem Approval).
+    if (intent.ambiguous) {
+      // O número da frase é só para repetir na pergunta; a decisão em si fica nula.
+      const n = jobNumberIn(rawText, kind);
+      const at = n === null ? '' : ` ${n}`;
+      const approve = intent.decision === 'approve';
+      const ptVerb = approve ? 'aprovar' : 'rejeitar';
+      const ptSayVerb = approve ? 'aprova' : 'rejeita';
+      const ptMerge = approve ? 'aprovo' : 'rejeito';
+      const enVerb = approve ? 'approve' : 'reject';
+      return say(language,
+        `Ficou ambíguo: você quer ${ptVerb} ${article} ${noun}${at} ou o merge de código? Diga '${ptSayVerb} ${article} ${noun}${at}' ou '${ptMerge} o merge'.`,
+        `It's ambiguous: do you want to ${enVerb} ${noun}${at} or the code merge? Say '${enVerb} ${noun}${at}' or '${enVerb} the merge'.`);
+    }
+    if (intent.number === null) {
+      return say(language, `Qual ${noun}? Fala o número, por exemplo "${noun} 2".`,
+        `Which ${noun}? Say the number, like "${noun} 2".`);
+    }
+    // Oferta mexe SÓ em radar_offers. O evento vai para o job que gerou o candidato
+    // (radar_candidates.job_id): número de oferta e número de job são independentes.
+    if (kind === 'radar') {
+      if (!this.radar) return this.noRadar(language);
+      const resultado = intent.decision === 'approve'
+        ? await approveOffer(this.radar, intent.number)
+        : await rejectOffer(this.radar, intent.number);
+      if (!resultado.ok) return this.offerNotFound(intent.number, language);
+      const candidato = resultado.offer.candidateId
+        ? await this.radar.getCandidate(resultado.offer.candidateId)
+        : null;
+      if (candidato?.jobId) {
+        const job = await this.memory.getJob(candidato.jobId);
+        if (job) {
+          await this.memory.addJobEvent(job.id, {
+            eventType: 'progress',
+            source: 'owner',
+            message: resultado.offer.status === 'aprovada'
+              ? 'oferta aprovada pelo Joel (não autoriza campanha nem gasto)'
+              : 'oferta rejeitada pelo Joel',
+          });
+        }
+      }
+      return language === 'en'
+        ? (resultado.offer.status === 'aprovada'
+          ? `Offer ${intent.number} version ${resultado.offer.version} approved as a briefing. That does not authorize campaign, purchase or spending.`
+          : `Offer ${intent.number} version ${resultado.offer.version} rejected. Nothing was published or spent.`)
+        : resultado.text;
+    }
+    const job = await this.memory.getJobByNumber(kind, intent.number);
+    if (!job || job.status !== 'succeeded') {
+      return say(language, `Não tem ${noun} ${ready} com o número ${intent.number}.`,
+        `There is no ready ${noun} with number ${intent.number}.`);
+    }
+    const approved = intent.decision === 'approve';
+    // Daqui para baixo só chega vídeo: oferta já voltou no bloco acima.
+    const message = approved ? 'vídeo aprovado pelo Joel (não publica nem gasta)' : 'vídeo rejeitado pelo Joel';
+    await this.memory.addJobEvent(job.id, { eventType: 'progress', source: 'owner', message });
+    return approved
+      ? say(language, `Aprovei ${article} ${noun} ${intent.number}. Isso não publica, não gasta e não faz merge.`,
+        `Approved ${noun} ${intent.number}. That does not publish, spend or merge.`)
+      : say(language, `Rejeitei ${article} ${noun} ${intent.number}. Nada foi publicado nem gasto.`,
+        `Rejected ${noun} ${intent.number}. Nothing was published or spent.`);
   }
 
   private async waitingTasks(): Promise<Task[]> {

@@ -21,12 +21,12 @@ describe('agentes sabem uns dos outros', () => {
 
   test('o Claude recebe o que o Codex respondeu, as tarefas abertas e quem ele é', async () => {
     const codex = new FakeResearcher('codex:gpt-6-luna', 'O Ollama 0.40.14 saiu hoje, segundo o GitHub.');
-    const night1 = new NightCoordinator(mem, new NightRouter(llm, names), llm, [codex]);
+    const night1 = new NightCoordinator(mem, new NightRouter(llm, names), llm, { researchers: [codex] });
     await (await night1.handle('Pesquisa pra mim a versão mais nova do Ollama')).followUp;
     await night1.handle('pede pro claude corrigir o bug do login no Soaken');
 
     const claude = new FakeResearcher('claude:haiku', 'Custa zero, é gratuito.');
-    const night2 = new NightCoordinator(mem, new NightRouter(llm, names), llm, [claude]);
+    const night2 = new NightCoordinator(mem, new NightRouter(llm, names), llm, { researchers: [claude] });
     await (await night2.handle('pesquisa quanto custa ele')).followUp;
 
     const ctx = claude.contexts[0]!;
@@ -38,9 +38,9 @@ describe('agentes sabem uns dos outros', () => {
 
   test('Night reiniciado lembra da conversa, inclusive do que outro agente respondeu', async () => {
     const codex = new FakeResearcher('codex:gpt-6-luna', 'O dólar fechou em cinco reais.');
-    await (await new NightCoordinator(mem, new NightRouter(llm, names), llm, [codex]).handle('Qual a cotação do dólar hoje?')).followUp;
+    await (await new NightCoordinator(mem, new NightRouter(llm, names), llm, { researchers: [codex] }).handle('Qual a cotação do dólar hoje?')).followUp;
 
-    const restarted = new NightCoordinator(mem, new NightRouter(llm, names), llm, []);
+    const restarted = new NightCoordinator(mem, new NightRouter(llm, names), llm);
     await restarted.handle('e isso é caro ou barato?');
     const sent = llm.calls[0]!.messages.map((m) => m.content);
     assert.ok(sent.includes('Qual a cotação do dólar hoje?'));
@@ -48,7 +48,7 @@ describe('agentes sabem uns dos outros', () => {
   });
 
   test('o contexto tem tamanho limitado e corta o mais antigo primeiro', async () => {
-    const n = new NightCoordinator(mem, new NightRouter(llm, names), new FakeLlm(() => 'x'.repeat(400)), []);
+    const n = new NightCoordinator(mem, new NightRouter(llm, names), new FakeLlm(() => 'x'.repeat(400)));
     for (let i = 0; i < 12; i++) await n.handle(`pergunta número ${i} ${'y'.repeat(120)}`);
     const ctx = await buildSharedContext(mem, 'codex:gpt-6-luna', 'pt-BR');
     assert.ok(ctx.length <= MAX_CONTEXT_CHARS, `${ctx.length} caracteres`);

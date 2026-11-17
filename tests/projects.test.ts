@@ -52,8 +52,10 @@ describe('achar pasta e rodar projeto (uso real 04/11)', () => {
     const launcher = { async launch(plan: RunPlan) { launched.push(plan); return { ok: true, detail: 'janela aberta' }; } };
     const make = () => {
       const llm = new FakeLlm();
-      return new NightCoordinator(mem, new NightRouter(llm, async () => (await mem.listProjects()).map((p) => p.name)), llm, [], undefined, [], launcher,
-        (s) => findFolders(s, [path.join(root, 'Desktop')]));
+      return new NightCoordinator(mem, new NightRouter(llm, async () => (await mem.listProjects()).map((p) => p.name)), llm, {
+        launcher,
+        folderSearch: (s) => findFolders(s, [path.join(root, 'Desktop')]),
+      });
     };
     before(async () => { await resetTestDb(); mem = await PgMemory.open(TEST_URL); });
     after(async () => { await mem?.close(); });

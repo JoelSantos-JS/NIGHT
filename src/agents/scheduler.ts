@@ -8,6 +8,12 @@
 
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { decide, type DivergenceParecer } from '../advisor/divergence.ts';
+import { getDecisionPoint } from '../advisor/matrix.ts';
+import type { Opinion } from '../advisor/opinion.ts';
+import type { AdvisorService } from '../advisor/service.ts';
+import type { Card } from '../cards/card.ts';
+import { cardReference, checkDiffAgainstCard } from '../cards/import.ts';
 import type { AgentRun, CodingAgent, DiffReport, Memory, WorktreeManager, Worktree } from '../core/interfaces.ts';
 import type { AgentName, Language, Task, TaskStatus } from '../core/types.ts';
 import { FINAL_TASK_STATUSES } from '../core/types.ts';
@@ -28,7 +34,37 @@ export interface ApprovalResult {
 }
 
 const RUNNING: TaskStatus[] = ['planning', 'running', 'testing'];
-const other = (a: AgentName): AgentName => (a === 'claude' ? 'codex' : 'claude');
+/**
+ * Revisor de quem implementou (D12/H01): o autor NUNCA revisa o próprio diff.
+ * deepseek → claude (o QA da construção), claude ↔ codex como antes.
+ */
+const other = (a: AgentName): AgentName => (a === 'deepseek' || a === 'codex' ? 'claude' : 'codex');
+
+/** Nome falado e o que falta para ligar cada agente; a mensagem de erro tem que dizer o que fazer. */
+const AGENT_LABEL: Readonly<Record<AgentName, string>> = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek' };
+const AGENT_SETUP: Readonly<Record<AgentName, string>> = {
+  claude: 'a CLI do Claude Code não está instalada ou não está logada',
+  codex: 'a CLI do Codex não está instalada ou não está logada',
+  deepseek: 'falta a chave da API DeepSeek (defina DEEPSEEK_API_KEY ou crie ~/.deepseek/api_key)',
+};
+
+/**
+ * Veredito explícito da revisão (o reviewPrompt pede "VEREDITO: aprovar" ou "VEREDITO: corrigir").
+ * O modelo varia caixa, acento e separador ("Veredito - aprovado"), então compara normalizado.
+ * Sem essas palavras não há veredito: parecer inconclusivo nunca pode ser falado como aprovação.
+ */
+export function reviewVerdict(texto: string): 'aprovar' | 'corrigir' | null {
+  const t = texto.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  if (/veredito\s*[-–—:=]*\s*corrig/.test(t)) return 'corrigir';
+  if (/veredito\s*[-–—:=]*\s*aprov/.test(t)) return 'aprovar';
+  return null;
+}
+
+/** Revisor de reserva (ex.: DeepSeek): mesma forma do Reviewer, com nome livre para a reserva. */
+export interface ReserveReviewer {
+  readonly name: string;
+  review(worktree: Worktree, prompt: string, signal?: AbortSignal): Promise<string>;
+}
 
 export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
   private queue: string[] = [];
@@ -41,9 +77,14 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
   constructor(
     private readonly memory: Memory,
     private readonly worktrees: WorktreeManager,
-    private readonly agents: Record<AgentName, CodingAgent>,
+    /** Só os agentes configurados: pedir um que não existe falha a tarefa com o motivo (D12/H01). */
+    private readonly agents: Partial<Record<AgentName, CodingAgent>>,
     private readonly reviewers: Partial<Record<AgentName, Reviewer>> = {},
     private readonly language: Language = 'pt-BR',
+    /** Reserva usada só se o revisor principal falhar; nunca revisa o próprio código. */
+    private readonly reserveReviewer?: ReserveReviewer,
+    /** Parecer do DeepSeek no diff final (D05); opcional para não quebrar quem já monta o scheduler. */
+    private readonly advisor?: AdvisorService,
   ) {
     super();
   }
@@ -82,13 +123,20 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
   private async execute(taskId: string): Promise<void> {
     let task = (await this.memory.getTask(taskId))!;
     if (task.status !== 'queued') return; // cancelada enquanto esperava
+    // O autor nunca revisa o próprio diff: sem outro revisor a tarefa não pode ser aprovada por ele mesmo.
+    if (task.reviewAgent === task.primaryAgent) {
+      return this.fail(task, `o ${AGENT_LABEL[task.primaryAgent]} não pode revisar o próprio código; escolha outro revisor`);
+    }
     const project = await this.memory.getProject(task.projectId);
     if (!project?.repoPath) {
       return this.fail(task, `o projeto ${project?.name ?? task.projectId} não tem pasta de repositório cadastrada`);
     }
     const agent = this.agents[task.primaryAgent];
+    if (!agent) {
+      return this.fail(task, `o ${AGENT_LABEL[task.primaryAgent]} não está configurado: ${AGENT_SETUP[task.primaryAgent]}`);
+    }
     const ok = await agent.available();
-    if (!ok.ok) return this.fail(task, `o ${task.primaryAgent} não está disponível: ${ok.detail}`);
+    if (!ok.ok) return this.fail(task, `o ${AGENT_LABEL[task.primaryAgent]} não está disponível: ${ok.detail}`);
 
     // 1. worktree própria
     task = await this.setStatus(task, 'planning', 'criando a worktree');
@@ -124,41 +172,194 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
     if (diff.changedFiles.length === 0) {
       return this.fail(task, `o ${task.primaryAgent} terminou sem mudar nenhum arquivo. Disse: ${outcome.summary.slice(0, 200)}`, wt);
     }
-    let review = '';
-    const reviewer = task.reviewAgent ? this.reviewers[task.reviewAgent] : undefined;
-    if (reviewer) {
+    // Texto e estado separados: uma revisão que falhou (ok=false) nunca pode ser anunciada como aprovada.
+    const review: { ok: boolean; autor: string | null; texto: string; reservaDo: string | null } = {
+      ok: false, autor: null, texto: '', reservaDo: null,
+    };
+    let reviewFailure = ''; // motivo curto da última falha
+    let reviewAttempted: string | null = null; // último revisor chamado (para a mensagem de diff alterado)
+    let reviewRan = false;
+    const primaryName = task.reviewAgent;
+
+    const runReview = async (name: string, reviewer: { review(w: Worktree, p: string, s?: AbortSignal): Promise<string> }) => {
+      const ctx = await buildSharedContext(this.memory, `${name}:revisão`, this.language);
+      const abort = new AbortController();
+      this.reviews.set(task.id, abort);
       try {
-        const ctx = await buildSharedContext(this.memory, `${reviewer.name}:revisão`, this.language);
-        const abort = new AbortController();
-        this.reviews.set(task.id, abort);
-        try {
-          review = await reviewer.review(wt, reviewPrompt(task, wt, task.primaryAgent, outcome.summary, diffStat(diff), ctx), abort.signal);
-        } finally {
-          this.reviews.delete(task.id);
-        }
-        await this.event(task, 'agent-output', reviewer.name, `revisão: ${review.slice(0, 4000)}`);
-      } catch (err) {
-        review = `(a revisão do ${reviewer.name} falhou: ${(err as Error).message.slice(0, 150)})`;
-        await this.event(task, 'error', reviewer.name, review);
+        return await reviewer.review(wt, reviewPrompt(task, wt, task.primaryAgent, outcome.summary, diffStat(diff), ctx), abort.signal);
+      } finally {
+        this.reviews.delete(task.id);
       }
+    };
+
+    if (primaryName) {
+      const primary = this.reviewers[primaryName];
+      if (primary) {
+        reviewRan = true;
+        reviewAttempted = primaryName;
+        try {
+          const texto = (await runReview(primaryName, primary)).trim();
+          if (!texto) throw new Error('revisão vazia');
+          review.texto = texto;
+          review.ok = true;
+          review.autor = primaryName;
+          await this.event(task, 'agent-output', primaryName, `revisão: ${review.texto.slice(0, 4000)}`);
+        } catch (err) {
+          reviewFailure = (err as Error).message.slice(0, 150) || 'falhou';
+          await this.event(task, 'error', primaryName, `(a revisão do ${primaryName} falhou: ${reviewFailure})`);
+        }
+      } else {
+        reviewFailure = 'revisor não configurado';
+        await this.event(task, 'error', primaryName, `(a revisão do ${primaryName} não está configurada)`);
+      }
+    }
+
+    // Revisor indisponível nunca vira aprovação: tenta a reserva, desde que ela não seja o autor do código.
+    const reserve = this.reserveReviewer;
+    if (primaryName && !review.ok && reviewFailure && reserve && reserve.name !== task.primaryAgent && !this.cancelRequested.has(task.id)) {
+      reviewRan = true;
+      reviewAttempted = reserve.name;
+      const motivo = reviewFailure;
+      try {
+        const texto = (await runReview(reserve.name, reserve)).trim();
+        if (!texto) throw new Error('revisão vazia');
+        review.texto = texto;
+        review.ok = true;
+        review.autor = reserve.name;
+        review.reservaDo = primaryName;
+        await this.event(task, 'agent-output', reserve.name,
+          `revisão (reserva do ${primaryName}, motivo: ${motivo}): ${review.texto.slice(0, 4000)}`);
+      } catch (err) {
+        reviewFailure = (err as Error).message.slice(0, 150) || 'falhou';
+        await this.event(task, 'error', reserve.name,
+          `revisão (reserva do ${primaryName}, motivo: ${motivo}) falhou: ${reviewFailure}`);
+      }
+    }
+
+    if (reviewRan) {
       // O revisor deveria só ler. Se algo mudou (ex.: um teste que escreve arquivo), não dá para confiar no diff.
       const after = await this.worktrees.diff(wt);
       if (after.patch !== diff.patch) {
-        return this.fail(task, `os arquivos mudaram durante a revisão do ${reviewer.name}; confira a worktree antes de pedir de novo`, wt);
+        const who = review.autor ?? reviewAttempted ?? primaryName ?? 'revisor';
+        return this.fail(task, `os arquivos mudaram durante a revisão do ${who}; confira a worktree antes de pedir de novo`, wt);
       }
     }
     if (this.cancelRequested.has(task.id)) return this.cancelled(task, wt, 'cancelada durante a revisão');
+
+    // D05: parecer do DeepSeek no diff final. Falha de parecer não vira aprovação nem trava a
+    // tarefa: fica registrada, e a frase diz que ele não veio.
+    let parecer: Opinion | null = null;
+    let parecerFalhou: string | null = null;
+    if (this.advisor) {
+      try {
+        const referencia = cardReference(task);
+        const consulta = await this.advisor.consult('codigo.diff-final', {
+          jobId: task.id,
+          dominio: 'codigo',
+          fase: 'diff-final',
+          objetivo: task.objective,
+          pergunta: getDecisionPoint('codigo.diff-final')?.pergunta
+            ?? 'O diff final cobre o objetivo e tem teste para o caso de erro?',
+          evidencias: [
+            { ref: 'diff-stat', origem: 'git diff --stat', conteudo: diffStat(diff), externa: false },
+            // Diff cortado: o parecer é sobre o necessário, não o repositório inteiro.
+            { ref: 'diff', origem: 'git diff', conteudo: diff.patch.slice(0, 40_000), externa: false },
+            { ref: 'resumo-agente', origem: `resumo do ${task.primaryAgent}`, conteudo: outcome.summary, externa: false },
+            ...(referencia ? [{ ref: 'cartao', origem: referencia, conteudo: task.scope, externa: false }] : []),
+          ],
+          testes: 'não rodaram; o scheduler ainda não roda testes',
+          outroParecer: review.ok ? review.texto.slice(0, 4000) : undefined,
+        });
+        if (consulta.status === 'ok' || consulta.status === 'cache') {
+          parecer = consulta.opinion;
+          await this.event(task, 'agent-output', 'deepseek',
+            parecerParaEvento(parecer, task.primaryAgent === 'deepseek'));
+        } else if (consulta.status === 'parecer_indisponivel') {
+          parecerFalhou = `${consulta.reason}: ${consulta.detail}`;
+          await this.event(task, 'error', 'deepseek', `parecer indisponível: ${parecerFalhou}`);
+        } else {
+          parecerFalhou = consulta.motivo;
+          await this.event(task, 'error', 'deepseek', `parecer indisponível: ${parecerFalhou}`);
+        }
+      } catch (err) {
+        parecerFalhou = `erro: ${(err as Error).message}`;
+        await this.event(task, 'error', 'deepseek', `parecer indisponível: ${parecerFalhou}`);
+      }
+    }
+    if (this.cancelRequested.has(task.id)) return this.cancelled(task, wt, 'cancelada durante a revisão');
+
     const conflicts = await this.worktrees.checkMerge(project, wt);
     if (!conflicts.clean) await this.event(task, 'progress', 'scheduler', `conflito com ${project.defaultBranch ?? 'o branch padrão'}: ${conflicts.conflicts.join(', ')}`);
 
     // 4. pede aprovação
+    const shortFailure = (reviewFailure || 'sem motivo').replace(/\s+/g, ' ').slice(0, 120);
+    const reviewLine = review.ok
+      ? `revisão (${review.autor}${review.reservaDo ? `, reserva do ${review.reservaDo}` : ''}): ${review.texto}`
+      : primaryName
+        ? `revisão: não saiu (${shortFailure})`
+        : '';
+    // A tarefa guarda id/revisão/hash do cartão, não o cartão inteiro. O escopo escrito por
+    // taskFieldsFromCard traz os arquivos permitidos; sem eles, não há o que conferir.
+    const cartaoRef = cardReference(task);
+    const arquivosDoCartao = task.cardId !== null ? arquivosPermitidosDoEscopo(task.scope) : null;
+    const foraDoCartao = arquivosDoCartao
+      ? checkDiffAgainstCard(
+        { arquivosPermitidos: arquivosDoCartao } as Card,
+        diff.changedFiles.map((f) => f.path),
+      ).foraDoCartao
+      : [];
+    const foraFrase = foraDoCartao.length > 0
+      ? `${foraDoCartao.length} arquivo${foraDoCartao.length > 1 ? 's' : ''} fora do cartão: ${foraDoCartao.join(', ')}`
+      : '';
     const summary = [
       `${task.primaryAgent}: ${outcome.summary}`,
-      review && `revisão (${reviewer!.name}): ${review}`,
+      cartaoRef,
+      foraFrase,
+      reviewLine,
+      parecer && parecerParaEvento(parecer, task.primaryAgent === 'deepseek'),
+      parecerFalhou && `parecer DeepSeek indisponível: ${parecerFalhou}`,
       !conflicts.clean && `conflito em: ${conflicts.conflicts.join(', ')}`,
     ].filter(Boolean).join('\n\n');
     task = await this.memory.updateTask(task.id, { resultSummary: summary });
-    const verdict = /VEREDITO:\s*corrigir/i.test(review) ? `O ${reviewer!.name} revisou e pediu correção.` : review ? `O ${reviewer!.name} revisou e aprovou.` : '';
+    // Uma revisão indisponível NUNCA pode ser falada como aprovação; e revisão sem veredito
+    // explícito também não, porque o revisor pode ter deixado um parecer inconclusivo.
+    const veredito = review.ok ? reviewVerdict(review.texto) : null;
+    const baseVerdict = !review.ok
+      ? (primaryName ? `A revisão não saiu (${shortFailure}); confira o diff antes de aprovar.` : '')
+      : veredito === 'corrigir'
+        ? `O ${review.autor} revisou e pediu correção.`
+        : veredito === 'aprovar'
+          ? `O ${review.autor} revisou e aprovou.`
+          : `O ${review.autor} revisou mas não deu veredito claro; leia a revisão antes de aprovar.`;
+    const verdictParts = [baseVerdict];
+    if (this.advisor) {
+      verdictParts.push(parecer
+        ? `Parecer DeepSeek: ${parecer.recomendacao}${parecer.contrapontos.length > 0 ? ' — ver contrapontos' : ''}.`
+        : `Parecer DeepSeek indisponível${parecerFalhou ? ` (${parecerFalhou.replace(/\s+/g, ' ').slice(0, 120)})` : ''}.`);
+      // D05: o scheduler ainda não roda testes, e o merge é do Joel. A regra de divergência só
+      // informa o que fazer agora; ela nunca aprova sozinha.
+      const pareceres: DivergenceParecer[] = [];
+      if (review.ok) {
+        const v = reviewVerdict(review.texto);
+        pareceres.push({
+          autor: review.autor ?? 'revisor',
+          recomendacao: v === 'aprovar' ? 'prosseguir' : v === 'corrigir' ? 'revisar' : 'perguntar_joel',
+        });
+      } else if (reviewAttempted || primaryName) {
+        pareceres.push({ autor: review.autor ?? reviewAttempted ?? primaryName ?? 'revisor', recomendacao: 'indisponivel' });
+      }
+      if (parecer) pareceres.push({ autor: 'deepseek', recomendacao: parecer.recomendacao });
+      const decisao = decide({
+        testes: 'nao_rodaram',
+        fontesObrigatoriasOk: true,
+        reservadoAoJoel: true,
+        pareceres,
+        autorDoTrabalho: task.primaryAgent,
+      });
+      verdictParts.push(`Testes não rodaram (o scheduler ainda não roda testes); decisão: ${decisao.decisao} — ${decisao.motivo}. A aprovação do merge continua sendo sua.`);
+    }
+    if (foraFrase) verdictParts.push(`${foraFrase}.`);
+    const verdict = verdictParts.filter(Boolean).join(' ');
     // Abrir a aprovação é atômico em relação a cancel/approve/reject da mesma tarefa (2ª revisão do Codex).
     await this.exclusive(task.id, async () => {
       if (this.cancelRequested.has(task.id)) return this.cancelled(task, wt, 'cancelada antes de pedir aprovação');
@@ -299,11 +500,40 @@ export class TaskScheduler extends EventEmitter<{ update: [TaskUpdate] }> {
     return { killed: true, detail: 'não estava rodando; cancelei' };
   }
 
-  /** No início: o que estava rodando quando o Night fechou vira `failed`. Nada recomeça sozinho. */
+  /**
+   * No início: o que estava rodando quando o Night fechou vira `failed`. Nada recomeça sozinho,
+   * nenhum diff parcial vira aprovação e nenhuma worktree é apagada (D13).
+   */
   async reconcile(): Promise<Task[]> {
     const stuck = await this.memory.listTasks({ status: RUNNING });
     for (const t of stuck) {
-      await this.fail(t, 'o Night foi fechado durante a execução; não recomecei sozinho');
+      if (!t.worktreePath) {
+        await this.fail(t, 'o Night fechou durante a execução; nada foi alterado; pode pedir de novo com segurança');
+        continue;
+      }
+      if (!t.branch || !t.baseRef) {
+        // Worktree registrada pela metade não dá para conferir; não invente "nada mudou".
+        await this.fail(t, 'o Night fechou durante a execução; não consegui conferir a worktree (dados incompletos) e não apaguei nada — confira antes de pedir de novo');
+        continue;
+      }
+      const wt: Worktree = { path: t.worktreePath, branch: t.branch, baseRef: t.baseRef };
+      let diff: DiffReport;
+      try {
+        diff = await this.worktrees.diff(wt);
+      } catch (err) {
+        // Worktree sumiu ou não pôde ser lida: não invente "está tudo certo" nem apague nada.
+        await this.fail(t, `o Night fechou durante a execução; não consegui conferir a worktree (${(err as Error).message}) e não apaguei nada — confira antes de pedir de novo`);
+        continue;
+      }
+      const n = diff.changedFiles.length;
+      if (n === 0) {
+        await this.fail(t, 'o Night fechou durante a execução; nada foi alterado; pode pedir de novo com segurança');
+        continue;
+      }
+      await this.fail(t, `o Night fechou durante a execução; a worktree tem ${n} arquivo(s) mudado(s) e foi mantida — confira antes de pedir de novo`);
+      // A lista no evento deixa o Joel conferir o que ficou sem abrir a worktree.
+      await this.event(t, 'progress', 'scheduler',
+        `worktree mantida em ${wt.path}: ${diff.changedFiles.map((f) => `${f.status}: ${f.path}`).join(', ')}`);
     }
     return stuck;
   }
@@ -367,6 +597,36 @@ export function diffStat(diff: DiffReport): string {
   // Nome de arquivo com quebra de linha ou "<tag>" não pode virar instrução no prompt do revisor.
   const clean = (p: string) => p.replace(/[\u0000-\u001f<>]/g, '?');
   return diff.changedFiles.map((f) => `- ${f.status}: ${clean(f.path)}`).join('\n') || '(nada)';
+}
+
+/** Texto curto do parecer para falar e registrar: recomendação, motivos e contrapontos. */
+function parecerParaEvento(opinion: Opinion, autorEhDeepSeek: boolean): string {
+  const curtos = (itens: string[]) => itens
+    .slice(0, 3)
+    .map((item) => item.replace(/\s+/g, ' ').slice(0, 200))
+    .join('; ') || 'nenhum';
+  return [
+    `parecer DeepSeek: ${opinion.recomendacao}`,
+    `motivos: ${curtos(opinion.motivos)}`,
+    `contrapontos: ${curtos(opinion.contrapontos)}`,
+    // O autor do diff nunca conta como revisão independente do próprio trabalho.
+    autorEhDeepSeek ? 'não conta como revisão independente: o DeepSeek é o autor do diff' : '',
+  ].filter(Boolean).join(' — ');
+}
+
+/**
+ * Arquivos liberados que o cartão deixa no escopo da tarefa (`Arquivos permitidos:`, escrito por
+ * taskFieldsFromCard). Sem a seção ou com "nenhum", não há cartão para conferir.
+ */
+function arquivosPermitidosDoEscopo(scope: string): string[] | null {
+  const texto = scope.replace(/\r\n/g, '\n');
+  const secao = /(?:^|\n)Arquivos permitidos:\n([\s\S]*?)(?:\n\n|$)/.exec(texto);
+  if (!secao) return null;
+  const arquivos = secao[1]!
+    .split('\n')
+    .map((linha) => /^-\s+(.+)$/.exec(linha)?.[1]?.trim() ?? '')
+    .filter((item) => item !== '' && item !== 'nenhum');
+  return arquivos.length > 0 ? arquivos : null;
 }
 
 export { other as otherAgent };

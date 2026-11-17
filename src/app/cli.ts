@@ -8,7 +8,7 @@ import type { Reply } from './coordinator.ts';
 const DIM = '\u001b[2m';
 const RESET = '\u001b[0m';
 
-const { memory, llm, llmOk, night, tasks, stuck, runsTasks } = await createNight();
+const { memory, llm, llmOk, night, tasks, stuck, runsTasks, close } = await createNight();
 if (!runsTasks) console.log('Outra janela do Night já cuida das tarefas de código; esta conversa, pesquisa e salva ideias.');
 tasks.on('update', (u) => console.log(u.important ? `\nnight › ${u.message}` : `${DIM}[tarefa ${u.task.id}] ${u.message}${RESET}`));
 if (stuck.length) console.log(`${stuck.length} tarefa(s) estavam rodando quando o Night fechou; marquei como falha.`);
@@ -41,5 +41,6 @@ try {
 } finally {
   rl.close();
   await tasks.shutdown(); // mata agentes vivos antes de soltar a trava
+  await close();
   await memory.close();
 }

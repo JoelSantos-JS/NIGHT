@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
+import type { AdvisorResult } from '../src/advisor/deepseek-client.ts';
+import { MemoryAdvisorJournal } from '../src/advisor/journal.ts';
+import type { AdvisorInput, Recomendacao } from '../src/advisor/opinion.ts';
+import { AdvisorService, type OpinionAdvisor } from '../src/advisor/service.ts';
+import type { Card } from '../src/cards/card.ts';
+import { taskFieldsFromCard } from '../src/cards/import.ts';
 import type { AgentRun, CodingAgent, DiffReport, WorktreeManager, Worktree } from '../src/core/interfaces.ts';
-import type { Approval, Project, Task } from '../src/core/types.ts';
+import type { AgentName, Approval, Project, Task } from '../src/core/types.ts';
 import type { Reviewer, RunOutcome } from '../src/agents/coding.ts';
-import { TaskScheduler, type TaskUpdate } from '../src/agents/scheduler.ts';
+import { QuotaError } from '../src/agents/research.ts';
+import { otherAgent, TaskScheduler, type ReserveReviewer, type TaskUpdate } from '../src/agents/scheduler.ts';
 import { NightCoordinator } from '../src/app/coordinator.ts';
 import { PgMemory } from '../src/memory/pg-memory.ts';
 import { NightRouter } from '../src/router/router.ts';
@@ -21,7 +28,10 @@ class FakeWorktrees implements WorktreeManager {
     return { path: `D:/NIGHT-data/worktrees/${project.id}/${agent}-${taskId}`, branch: `agent/${agent}/${taskId}`, baseRef: 'abc123def4567890' };
   }
   patch = '+export function parse() {}';
+  /** Simula worktree sumida: reconcile não pode inventar "nada mudou" nesse caso. */
+  diffError: Error | null = null;
   async diff(wt: Worktree): Promise<DiffReport> {
+    if (this.diffError) throw this.diffError;
     return { baseRef: wt.baseRef, headRef: 'HEAD', changedFiles: this.files, patch: this.patch };
   }
   async checkMerge() { return { clean: this.conflicts.length === 0, conflicts: this.conflicts }; }
@@ -38,7 +48,7 @@ class FakeAgent implements CodingAgent {
   prompts: string[] = [];
   private resolvers = new Map<string, (o: RunOutcome) => void>();
   started = 0;
-  constructor(readonly name: 'claude' | 'codex', private readonly auto: RunOutcome | null = { exitCode: 0, summary: 'criei o parser e os testes passam' }) {}
+  constructor(readonly name: AgentName, private readonly auto: RunOutcome | null = { exitCode: 0, summary: 'criei o parser e os testes passam' }) {}
   async available() { return { ok: true, detail: 'fake' }; }
   async start(task: Task, _wt: Worktree, prompt: string): Promise<AgentRun> {
     this.prompts.push(prompt);
@@ -58,8 +68,53 @@ class FakeAgent implements CodingAgent {
 
 class FakeReviewer implements Reviewer {
   prompts: string[] = [];
-  constructor(readonly name: 'claude' | 'codex', private readonly verdict = 'VEREDITO: aprovar\n- nada grave', private readonly during?: () => void | Promise<void>) {}
+  constructor(readonly name: AgentName, private readonly verdict = 'VEREDITO: aprovar\n- nada grave', private readonly during?: () => void | Promise<void>) {}
   async review(_wt: Worktree, prompt: string) { this.prompts.push(prompt); await this.during?.(); return this.verdict; }
+}
+
+/** Reserva (DeepSeek): devolve o veredito ou lança, e guarda o prompt recebido. */
+class FakeReserveReviewer implements ReserveReviewer {
+  prompts: string[] = [];
+  constructor(readonly name: string, private readonly behavior: string | Error) {}
+  async review(_wt: Worktree, prompt: string) {
+    this.prompts.push(prompt);
+    if (this.behavior instanceof Error) throw this.behavior;
+    return this.behavior;
+  }
+}
+
+/** Conselheiro falso do diff final: guarda a entrada e devolve o parecer pedido. */
+class FakeAdvisor implements OpinionAdvisor {
+  readonly model = 'fake-flash';
+  readonly inputs: AdvisorInput[] = [];
+  constructor(private readonly recomendacao: Recomendacao = 'revisar') {}
+  async ask(input: AdvisorInput): Promise<AdvisorResult> {
+    this.inputs.push(input);
+    return {
+      ok: true,
+      opinion: {
+        version: 'parecer/1',
+        jobId: input.jobId,
+        fase: input.fase,
+        recomendacao: this.recomendacao,
+        motivos: ['falta o teste do caso de erro'],
+        evidencias: [],
+        contrapontos: ['o caminho de erro não está coberto'],
+        lacunas: [],
+        proximoTeste: 'testar a entrada inválida',
+        confianca: 'media',
+      },
+      model: this.model,
+      ms: 5,
+      usage: null,
+    };
+  }
+}
+
+/** AdvisorService com diário em memória: o scheduler conversa com o contrato real. */
+function advisorCom(recomendacao: Recomendacao = 'revisar'): { service: AdvisorService; fake: FakeAdvisor } {
+  const fake = new FakeAdvisor(recomendacao);
+  return { service: new AdvisorService(fake, new MemoryAdvisorJournal()), fake };
 }
 
 const until = async (cond: () => Promise<boolean>, ms = 3000) => {
@@ -191,14 +246,70 @@ describe('execução de tarefas de código', () => {
     const stuck = await s.reconcile();
     assert.deepEqual(stuck.map((t) => t.id), ['t10']);
     assert.equal(await status('t10'), 'failed');
-    assert.match((await mem.getTask('t10'))!.resultSummary!, /não recomecei sozinho/);
+    assert.match((await mem.getTask('t10'))!.resultSummary!, /nada foi alterado; pode pedir de novo com segurança/);
     assert.equal(claude.started, 0);
+  });
+
+  test('retomada: worktree com mudanças fica failed e mantida, com a lista no evento (D13)', async () => {
+    wts.files = [
+      { path: 'src/parser.ts', status: 'modified' },
+      { path: 'tests/parser.test.ts', status: 'added' },
+    ];
+    await newTask('r1', {
+      worktreePath: 'D:/NIGHT-data/worktrees/night/claude-r1',
+      branch: 'agent/claude/r1',
+      baseRef: 'abc123def4567890',
+    });
+    await mem.updateTaskStatus('r1', 'running', 'scheduler', 'rodando antes de fechar');
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') });
+    const stuck = await s.reconcile();
+    assert.deepEqual(stuck.map((t) => t.id), ['r1']);
+    assert.equal(await status('r1'), 'failed');
+    assert.match((await mem.getTask('r1'))!.resultSummary!,
+      /worktree tem 2 arquivo\(s\) mudado\(s\) e foi mantida — confira antes de pedir de novo/);
+    const ev = (await mem.listTaskEvents('r1')).find((e) => e.message.includes('worktree mantida em'));
+    assert.ok(ev, 'o evento mostra a lista do que ficou na worktree');
+    assert.match(ev!.message, /modified: src\/parser\.ts/);
+    assert.match(ev!.message, /added: tests\/parser\.test\.ts/);
+    assert.deepEqual(wts.discarded, [], 'a worktree nunca é apagada na retomada');
+    assert.equal((await mem.listPendingApprovals()).length, 0, 'diff parcial não vira aprovação');
+  });
+
+  test('retomada: worktree sem mudanças diz que dá para pedir de novo (D13)', async () => {
+    wts.files = [];
+    await newTask('r2', {
+      worktreePath: 'D:/NIGHT-data/worktrees/night/claude-r2',
+      branch: 'agent/claude/r2',
+      baseRef: 'abc123def4567890',
+    });
+    await mem.updateTaskStatus('r2', 'running', 'scheduler', 'rodando antes de fechar');
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') });
+    await s.reconcile();
+    assert.equal(await status('r2'), 'failed');
+    assert.match((await mem.getTask('r2'))!.resultSummary!, /nada foi alterado; pode pedir de novo com segurança/);
+    assert.deepEqual(wts.discarded, []);
+  });
+
+  test('retomada: worktree sumida diz que não conseguiu conferir, sem apagar nada (D13)', async () => {
+    wts.diffError = new Error('worktree não existe');
+    await newTask('r3', {
+      worktreePath: 'D:/NIGHT-data/worktrees/night/claude-r3',
+      branch: 'agent/claude/r3',
+      baseRef: 'abc123def4567890',
+    });
+    await mem.updateTaskStatus('r3', 'running', 'scheduler', 'rodando antes de fechar');
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') });
+    await s.reconcile();
+    assert.equal(await status('r3'), 'failed');
+    assert.match((await mem.getTask('r3'))!.resultSummary!,
+      /não consegui conferir a worktree \(worktree não existe\) e não apaguei nada/);
+    assert.deepEqual(wts.discarded, []);
   });
 
   test('por voz: pede, mostra as mudanças e aprova', async () => {
     const llm = new FakeLlm();
     const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') }, { claude: new FakeReviewer('claude') });
-    const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm, [], s);
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm, { tasks: s });
 
     const r = await n.handle('Pede pro Codex criar o parser de sinais no Night');
     assert.match(r.text, /^Mandei a tarefa \w+ para o codex no Night, e o claude revisa\./);
@@ -247,7 +358,7 @@ describe('execução de tarefas de código', () => {
     await newTask('t12');
     await mem.updateTaskStatus('t12', 'running', 'scheduler', 'rodando na outra janela');
     const llm = new FakeLlm();
-    const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm, []);
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm);
     assert.match((await n.handle('cancela a tarefa do Night')).text, /está com a outra janela do Night/);
     assert.equal(await status('t12'), 'running');
   });
@@ -341,7 +452,7 @@ describe('execução de tarefas de código', () => {
   test('esperando o texto da ideia, "cancela a tarefa" é comando, não ideia (revisão do Codex)', async () => {
     const llm = new FakeLlm();
     const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude', null), codex: new FakeAgent('codex') });
-    const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm, [], s);
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm, { tasks: s });
     await n.handle('pede pro claude criar o parser de sinais no Night');
     const [task] = await mem.listTasks();
     await until(async () => s.running().includes(task!.id));
@@ -355,11 +466,274 @@ describe('execução de tarefas de código', () => {
   test('"sem revisão" desliga o segundo agente', async () => {
     const llm = new FakeLlm();
     const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') });
-    const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm, [], s);
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => ['Night']), llm, { tasks: s });
     const r = await n.handle('pede pro claude corrigir o bug do roteador no Night, sem revisão');
     assert.doesNotMatch(r.text, /revisa/);
     const [task] = await mem.listTasks();
     assert.equal(task!.reviewAgent, null);
     await until(async () => (await status(task!.id)) === 'awaiting-approval');
+  });
+
+  test('revisor principal falha: a reserva DeepSeek revisa e a autoria fica certa (D11)', async () => {
+    const primary: Reviewer = { name: 'codex', review: async () => { throw new QuotaError('sem cota'); } };
+    const reserve = new FakeReserveReviewer('deepseek', 'VEREDITO: aprovar\n- nada grave');
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') },
+      { codex: primary }, 'pt-BR', reserve);
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    await newTask('t20');
+    await s.enqueue('t20');
+    await until(async () => (await status('t20')) === 'awaiting-approval');
+
+    const t = (await mem.getTask('t20'))!;
+    assert.match(t.resultSummary!, /revisão \(deepseek, reserva do codex\): VEREDITO: aprovar/);
+    const ev = (await mem.listTaskEvents('t20')).find((e) => e.source === 'deepseek');
+    assert.ok(ev, 'o evento da reserva fica registrado com source deepseek');
+    assert.match(ev!.message, /revisão \(reserva do codex, motivo: sem cota\)/);
+    assert.match(updates.at(-1)!.message, /O deepseek revisou e aprovou/);
+  });
+
+  test('revisor principal e reserva falham: nunca anuncia aprovação (D11)', async () => {
+    const primary: Reviewer = { name: 'codex', review: async () => { throw new Error('revisor caiu'); } };
+    const reserve = new FakeReserveReviewer('deepseek', new Error('API fora'));
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') },
+      { codex: primary }, 'pt-BR', reserve);
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    await newTask('t21');
+    await s.enqueue('t21');
+    await until(async () => (await status('t21')) === 'awaiting-approval');
+
+    const last = updates.at(-1)!;
+    assert.doesNotMatch(last.message, /aprovou/);
+    assert.match(last.message, /A revisão não saiu \(API fora\); confira o diff antes de aprovar\./);
+    assert.match((await mem.getTask('t21'))!.resultSummary!, /revisão: não saiu/);
+  });
+
+  test('revisor que lança não vira "aprovou" (bug D11)', async () => {
+    const reviewer: Reviewer = { name: 'codex', review: async () => { throw new Error('revisor caiu'); } };
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') },
+      { codex: reviewer });
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    await newTask('t22');
+    await s.enqueue('t22');
+    await until(async () => (await status('t22')) === 'awaiting-approval');
+
+    assert.doesNotMatch(updates.at(-1)!.message, /aprovou/);
+    assert.match(updates.at(-1)!.message, /A revisão não saiu \(revisor caiu\)/);
+  });
+
+  test('revisão com "VEREDITO: aprovar" é falada como aprovada (aceita variação de caixa e separador)', async () => {
+    const reviewer = new FakeReviewer('codex', 'Veredito - aprovado\n- nada grave');
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') }, { codex: reviewer });
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    await newTask('t24');
+    await s.enqueue('t24');
+    await until(async () => (await status('t24')) === 'awaiting-approval');
+
+    assert.match(updates.at(-1)!.message, /O codex revisou e aprovou\./);
+  });
+
+  test('revisão com "VEREDITO: corrigir" pede correção, não aprovação', async () => {
+    const reviewer = new FakeReviewer('codex', 'VEREDITO: corrigir\n- falta teste');
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') }, { codex: reviewer });
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    await newTask('t25');
+    await s.enqueue('t25');
+    await until(async () => (await status('t25')) === 'awaiting-approval');
+
+    const last = updates.at(-1)!.message;
+    assert.match(last, /O codex revisou e pediu correção\./);
+    assert.doesNotMatch(last, /aprovou/);
+  });
+
+  test('revisão sem veredito claro não é falada como aprovação', async () => {
+    const reviewer = new FakeReviewer('codex', 'Olhei o código e parece razoável, mas não sei dizer.');
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') }, { codex: reviewer });
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    await newTask('t26');
+    await s.enqueue('t26');
+    await until(async () => (await status('t26')) === 'awaiting-approval');
+
+    const last = updates.at(-1)!.message;
+    assert.doesNotMatch(last, /aprovou/);
+    assert.match(last, /O codex revisou mas não deu veredito claro; leia a revisão antes de aprovar\./);
+  });
+
+  test('a reserva não revisa o próprio código (autoria)', async () => {
+    const primary: Reviewer = { name: 'codex', review: async () => { throw new Error('sem cota'); } };
+    const reserve = new FakeReserveReviewer('claude', 'VEREDITO: aprovar');
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') },
+      { codex: primary }, 'pt-BR', reserve);
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    await newTask('t23'); // primaryAgent 'claude': a reserva 'claude' não pode revisar
+    await s.enqueue('t23');
+    await until(async () => (await status('t23')) === 'awaiting-approval');
+
+    assert.equal(reserve.prompts.length, 0, 'o autor do código nunca é o revisor');
+    assert.doesNotMatch(updates.at(-1)!.message, /aprovou/);
+    assert.match(updates.at(-1)!.message, /A revisão não saiu/);
+  });
+
+  test('o revisor é sempre outro agente: deepseek → claude, claude ↔ codex (D12/H01)', () => {
+    assert.equal(otherAgent('deepseek'), 'claude');
+    assert.equal(otherAgent('claude'), 'codex');
+    assert.equal(otherAgent('codex'), 'claude');
+    for (const a of ['claude', 'codex', 'deepseek'] as const) {
+      assert.notEqual(otherAgent(a), a, `${a} não pode revisar o próprio código`);
+    }
+  });
+
+  test('DeepSeek implementa e o Claude revisa; a autoria fica registrada (D12/H01)', async () => {
+    const deepseek = new FakeAgent('deepseek');
+    const reviewer = new FakeReviewer('claude');
+    const s = new TaskScheduler(mem, wts, { deepseek, claude: new FakeAgent('claude') }, { claude: reviewer });
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    // A migração 011 precisa aceitar primary_agent 'deepseek' no banco de teste.
+    await newTask('d1', { primaryAgent: 'deepseek', reviewAgent: 'claude' });
+    await s.enqueue('d1');
+    await until(async () => (await status('d1')) === 'awaiting-approval');
+
+    assert.equal(deepseek.started, 1);
+    assert.match(reviewer.prompts[0]!, /Quem implementou foi o deepseek/);
+    const t = (await mem.getTask('d1'))!;
+    assert.equal(t.primaryAgent, 'deepseek');
+    assert.equal(t.reviewAgent, 'claude');
+    assert.equal(t.branch, 'agent/deepseek/d1');
+    assert.match(t.resultSummary!, /deepseek: criei o parser[\s\S]*revisão \(claude\): VEREDITO: aprovar/);
+    assert.match(updates.at(-1)!.message, /O claude revisou e aprovou\./);
+    const ev = (await mem.listTaskEvents('d1')).find((e) => e.source === 'deepseek');
+    assert.ok(ev, 'o evento do executor fica com source deepseek');
+  });
+
+  test('agente pedido que não está configurado falha com o motivo, sem criar worktree', async () => {
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude') });
+    await newTask('d2', { primaryAgent: 'deepseek', reviewAgent: 'claude' });
+    await s.enqueue('d2');
+    await until(async () => (await status('d2')) === 'failed');
+    assert.match((await mem.getTask('d2'))!.resultSummary!, /o DeepSeek não está configurado: falta a chave/);
+    assert.deepEqual(wts.created, []);
+  });
+
+  test('scheduler recusa tarefa cujo revisor é o próprio autor', async () => {
+    const s = new TaskScheduler(mem, wts, { deepseek: new FakeAgent('deepseek'), claude: new FakeAgent('claude') });
+    await newTask('d3', { primaryAgent: 'deepseek', reviewAgent: 'deepseek' });
+    await s.enqueue('d3');
+    await until(async () => (await status('d3')) === 'failed');
+    assert.match((await mem.getTask('d3'))!.resultSummary!, /o DeepSeek não pode revisar o próprio código/);
+    assert.deepEqual(wts.created, []);
+  });
+
+  test('parecer DeepSeek "revisar" aparece na frase e no evento, sem aprovar sozinho (D05)', async () => {
+    const { service, fake } = advisorCom('revisar');
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') },
+      { codex: new FakeReviewer('codex', 'VEREDITO: aprovar') }, 'pt-BR', undefined, service);
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    await newTask('a1');
+    await s.enqueue('a1');
+    await until(async () => (await status('a1')) === 'awaiting-approval');
+
+    assert.equal(fake.inputs.length, 1);
+    const entrada = fake.inputs[0]!;
+    assert.equal(entrada.jobId, 'a1');
+    assert.equal(entrada.dominio, 'codigo');
+    assert.equal(entrada.fase, 'diff-final');
+    assert.equal(entrada.objetivo, 'criar o parser de sinais');
+    assert.ok(entrada.evidencias.every((e) => !e.externa), 'diff e resumo são internos, nunca fonte externa');
+    assert.ok(entrada.evidencias.some((e) => e.ref === 'diff' && e.conteudo.length <= 40_000));
+    assert.match(entrada.outroParecer ?? '', /VEREDITO: aprovar/, 'a revisão vai como outro parecer');
+
+    const last = updates.at(-1)!.message;
+    assert.match(last, /O codex revisou e aprovou\./);
+    assert.match(last, /Parecer DeepSeek: revisar — ver contrapontos\./);
+    assert.match(last, /Testes não rodaram/);
+    assert.match(last, /A aprovação do merge continua sendo sua/);
+    const ev = (await mem.listTaskEvents('a1')).find((e) => e.source === 'deepseek' && e.message.includes('parecer DeepSeek'));
+    assert.ok(ev, 'o parecer fica no evento com source deepseek');
+    assert.match(ev!.message, /revisar/);
+    assert.match(ev!.message, /contrapontos: o caminho de erro não está coberto/);
+
+    assert.equal(await status('a1'), 'awaiting-approval', 'parecer não aprova nem recusa sozinho');
+    assert.equal((await mem.listPendingApprovals()).length, 1, 'a aprovação continua pendente');
+  });
+
+  test('parecer do DeepSeek não conta como revisão independente quando ele é o autor (D05)', async () => {
+    const { service, fake } = advisorCom('revisar');
+    const s = new TaskScheduler(mem, wts, { deepseek: new FakeAgent('deepseek'), claude: new FakeAgent('claude') },
+      { claude: new FakeReviewer('claude') }, 'pt-BR', undefined, service);
+    await newTask('a2', { primaryAgent: 'deepseek', reviewAgent: 'claude' });
+    await s.enqueue('a2');
+    await until(async () => (await status('a2')) === 'awaiting-approval');
+
+    assert.equal(fake.inputs.length, 1);
+    const ev = (await mem.listTaskEvents('a2')).find((e) => e.source === 'deepseek' && e.message.includes('parecer DeepSeek'));
+    assert.ok(ev);
+    assert.match(ev!.message, /não conta como revisão independente: o DeepSeek é o autor do diff/);
+    assert.equal(await status('a2'), 'awaiting-approval');
+    assert.equal((await mem.listPendingApprovals()).length, 1);
+  });
+
+  test('sem advisor, o fluxo continua como antes e sem parecer DeepSeek (D05)', async () => {
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') },
+      { codex: new FakeReviewer('codex', 'VEREDITO: aprovar') });
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    await newTask('a3');
+    await s.enqueue('a3');
+    await until(async () => (await status('a3')) === 'awaiting-approval');
+
+    const last = updates.at(-1)!.message;
+    assert.doesNotMatch(last, /Parecer DeepSeek/);
+    assert.match(last, /O codex revisou e aprovou\./);
+    const eventos = (await mem.listTaskEvents('a3')).filter((e) => e.message.includes('parecer DeepSeek'));
+    assert.deepEqual(eventos, []);
+  });
+
+  test('arquivos fora do cartão aparecem no resumo e na frase (D05)', async () => {
+    const cartao: Card = {
+      version: 'cartao/1',
+      id: 'NIGHT-1',
+      titulo: 'parser',
+      objetivo: 'criar o parser de sinais',
+      escopo: 'só o parser',
+      foraDoEscopo: [],
+      criteriosDePronto: ['o teste do parser passa'],
+      testes: ['npm test'],
+      arquivosPermitidos: ['src/parser.ts'],
+      riscos: [],
+      revisao: 1,
+    };
+    const { objective, scope } = taskFieldsFromCard(cartao);
+    wts.files = [
+      { path: 'src/parser.ts', status: 'modified' },
+      { path: 'src/fora1.ts', status: 'added' },
+      { path: 'src/fora2.ts', status: 'added' },
+    ];
+    const s = new TaskScheduler(mem, wts, { claude: new FakeAgent('claude'), codex: new FakeAgent('codex') },
+      { codex: new FakeReviewer('codex', 'VEREDITO: aprovar') });
+    const updates: TaskUpdate[] = [];
+    s.on('update', (u) => updates.push(u));
+    await newTask('a4', {
+      objective,
+      scope,
+      cardId: cartao.id,
+      cardRevision: cartao.revisao,
+      cardHash: 'abc123def4567890'.padEnd(64, '0'),
+    });
+    await s.enqueue('a4');
+    await until(async () => (await status('a4')) === 'awaiting-approval');
+
+    const resumo = (await mem.getTask('a4'))!.resultSummary!;
+    assert.match(resumo, /cartão NIGHT-1 r1 \(hash abc123def456\)/);
+    assert.match(resumo, /2 arquivos fora do cartão: src\/fora1\.ts, src\/fora2\.ts/);
+    assert.match(updates.at(-1)!.message, /2 arquivos fora do cartão: src\/fora1\.ts, src\/fora2\.ts/);
+    assert.equal(await status('a4'), 'awaiting-approval', 'cartão não aprova o merge sozinho');
   });
 });

@@ -26,11 +26,14 @@ const HALLUCINATIONS = [
   /^[\s.…!?,-]*$/,
 ];
 
-const { memory, llm, llmOk, night, tasks, stuck, runsTasks } = await createNight();
+// A voz já existe antes do Night porque os vídeos usam o mesmo Kokoro para narrar.
+const speech = new SpeechService();
+const { memory, llm, llmOk, night, tasks, stuck, runsTasks, close } = await createNight({
+  synth: (text, language, file) => speech.synthesizeToFile(text, language, file),
+});
 if (!runsTasks) console.log('Outra janela do Night já cuida das tarefas de código; esta conversa, pesquisa e salva ideias.');
 if (!llmOk) console.error(`${RED}Aviso: o Ollama não respondeu ou não tem o ${llm.model}. A conversa vai falhar até ele subir.${RESET}`);
 
-const speech = new SpeechService();
 console.log('Carregando a voz (Kokoro + Whisper), leva uns 30 s...');
 const ready = await speech.start();
 console.log(`${DIM}voz pronta em ${(ready.loadMs / 1000).toFixed(0)} s · whisper ${ready.whisper} · mic: ${ready.input} · saída: ${ready.output}${RESET}`);
@@ -145,5 +148,6 @@ try {
   await tasks.shutdown(); // mata agentes vivos antes de soltar a trava
   await chain;
   await speech.close();
+  await close();
   await memory.close();
 }

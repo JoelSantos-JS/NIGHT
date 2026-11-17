@@ -7,7 +7,7 @@
 //    classifica em JSON, e a saída é validada. Inválida = conversa.
 // 4. O resto é conversa com o Qwen local. Nada aqui usa cota premium.
 
-import type { Intent, LocalLlm, ModelRouter, RouteDecision } from '../core/interfaces.ts';
+import type { Intent, LocalLlm, ModelRouter, OfferEditField, RouteDecision } from '../core/interfaces.ts';
 import type { AgentName, Language } from '../core/types.ts';
 
 /** minúsculas, sem acento, espaços simples: "Salvá  ESSA" → "salva essa" */
@@ -31,6 +31,8 @@ export function detectLanguage(text: string): Language {
 function agentIn(n: string): AgentName | null {
   if (/\bclaude\b/.test(n)) return 'claude';
   if (/\bcodex\b/.test(n)) return 'codex';
+  // "pede pro DeepSeek mudar X no projeto Y" (D12/H01): mesma regra dos outros, só o nome muda.
+  if (/\bdeepseek\b/.test(n)) return 'deepseek';
   return null;
 }
 
@@ -89,7 +91,8 @@ const REJECT = new RegExp(`^(eu )?(rejeito|rejeita|rejeitar|descarta|descarte|de
 const NEGATED = /\b(nao|nunca|nem|jamais|do not|never|dont|don['’ ]?t)\b/;
 const CODE_VERB = /\b(implementa|implemente|implementar|cria|crie|criar|escreve|escreva|escrever|corrige|corrija|corrigir|refatora|refatore|conserta|conserte|adiciona|adicione|build|implement|write|fix|refactor|create|add)\b/;
 const CODE_NOUN = /\b(codigo|code|feature|funcao|function|parser|bug|testes?|tests?|branch|modulo|module|api|endpoint|script|classe|class|componente|component|docker|deploy|migracao|migration)\b/;
-const DELEGATE = /\b(pede|peca|pedir|manda|mande|fala|diz)\b.{0,6}\b(pro|para o|ao|o)\b.{0,3}\b(claude|codex)\b|\b(ask|tell|have|use|let)\b.{0,6}\b(claude|codex)\b|\b(use|usa|usar|com o)\b.{0,3}\b(claude|codex)\b/;
+const AGENT_NAMES = 'claude|codex|deepseek';
+const DELEGATE = new RegExp(`\\b(pede|peca|pedir|manda|mande|fala|diz)\\b.{0,6}\\b(pro|para o|ao|o)\\b.{0,3}\\b(${AGENT_NAMES})\\b|\\b(ask|tell|have|use|let)\\b.{0,6}\\b(${AGENT_NAMES})\\b|\\b(use|usa|usar|com o)\\b.{0,3}\\b(${AGENT_NAMES})\\b`);
 // Pedido explícito de pesquisa, ou pergunta sobre algo que muda (preço, notícia, resultado...).
 // "hoje"/"agora" sozinhos não contam: "tô cansado hoje" não é pesquisa.
 const RESEARCH = new RegExp([
@@ -110,7 +113,7 @@ const RESEARCH = new RegExp([
 // Conceito e explicação ("o que é uma API", "me explica", "diferença entre") continuam locais (blueprint §5).
 const FACT_QUESTION = /^(quem|quando|onde|quanto|quantos|quantas|who|when|where|how much|how many)\b|\b(o que|como) (voce acha que )?(vai|iria|deve) (acontecer|ser|rolar)\b|\bwhat (will|is going to) happen\b/;
 const CONCEPT = /\b(o que e|o que sao|o que significa|me explica|explica|como funciona|diferenca entre|para que serve|pra que serve|what is|what are|explain|how does|difference between)\b/;
-const ADDRESS_WORDS = new Set(['night', 'claude', 'codex', 'joel', 'eu', 'i', 'ok', 'oi', 'hey']);
+const ADDRESS_WORDS = new Set(['night', 'claude', 'codex', 'deepseek', 'joel', 'eu', 'i', 'ok', 'oi', 'hey']);
 /** Nome próprio no meio da frase ("reunião do GoPom", "CEO da Nvidia"), sem contar o Night e os agentes. */
 function hasProperNoun(original: string, projectNames: string[]): boolean {
   const own = new Set(projectNames.map(normalize)); // falar do próprio projeto não é pesquisa na internet
@@ -123,7 +126,7 @@ function hasProperNoun(original: string, projectNames: string[]): boolean {
 }
 
 // "branch", "merge" e "status" ficam de fora: aparecem demais em pergunta comum ("o que é uma branch?").
-const COMMANDISH = /\b(ideias?|ideas?|tarefas?|tasks?|projetos?|projects?|claude|codex)\b/;
+const COMMANDISH = /\b(ideias?|ideas?|tarefas?|tasks?|projetos?|projects?|claude|codex|deepseek)\b/;
 const SHOW_DIFF = /\b(mostra|mostre|me mostra|quais (sao )?as|ver|veja)\b.{0,15}\b(mudancas|alteracoes|diff)\b|\bo que (o \w+ )?mudou\b|\bshow (me )?(the )?(changes|diff)\b|\bwhat changed\b/;
 // Caminho do Windows no texto: "a pasta do Soaken é C:\Users\Joel\Desktop\PROFESSOR\tutor-pc"
 const WIN_PATH = /([a-z]:[\\/][^\s"'<>|?*]+)/i;
@@ -171,6 +174,276 @@ export function targetName(text: string, verbRe: RegExp): string {
   return /^(aqui|ali|isso|isto|as pastas|os arquivos|os projetos|tudo|it|this|that|here)?$/i.test(normalize(t)) ? '' : t;
 }
 
+// ---------- Trabalhos (F06/F07): oferta, vídeo e Radar ----------
+
+// Números falados por extenso de um a dez também valem ("vídeo três" = "vídeo 3").
+const NUM_WORDS: Readonly<Record<string, number>> = {
+  um: 1, dois: 2, tres: 3, quatro: 4, cinco: 5, seis: 6, sete: 7, oito: 8, nove: 9, dez: 10,
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+};
+const NUM_SRC = String.raw`\d{1,3}|um|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|one|two|three|four|five|six|seven|eight|nine|ten`;
+const NUM_PREFIX = String.raw`(?:numero\s+|number\s+|n[.º°]?\s*)?`;
+const OFFER_SRC = String.raw`ofertas?|offers?`;
+const VIDEO_SRC = String.raw`videos?`;
+const RADAR_SRC = String.raw`radar`;
+
+/** Número falado ("3", "três", "three"). null = sem número (ou zero, que não é número de trabalho). */
+export function spokenNumber(raw: string | null | undefined): number | null {
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    return n > 0 ? n : null;
+  }
+  return NUM_WORDS[raw] ?? null;
+}
+
+/** O número logo depois do substantivo: "vídeo 3", "oferta número dois". */
+function numberAfter(n: string, noun: string): number | null {
+  const m = n.match(new RegExp(`\\b(?:${noun})\\s*${NUM_PREFIX}(${NUM_SRC})\\b`));
+  return spokenNumber(m?.[1]);
+}
+
+// Aprovar/rejeitar OFERTA e VÍDEO é decisão de conteúdo, não de merge: só por regra, com substantivo junto.
+// "aprovo" e "aprovo o merge" continuam sendo a aprovação de merge de sempre.
+const DECISION_APPROVE = /\b(aprova|aprovo|aprovar|aprovado|approve|approved)\b/;
+const DECISION_REJECT = /\b(rejeita|rejeito|rejeitar|descarta|descarte|descartar|reject|discard)\b/;
+// "aprovo o merge do vídeo 2" mistura decisões: a regra não pode escolher uma das duas sozinha.
+const MERGE_WORD = /\b(merge|merges|mergear|juntar|junta|junte|pull requests?|pr)\b/;
+
+/** O verbo de decisão tem que ABRIR a frase; "aprovo a ideia da oferta" não pode virar decisão da oferta. */
+function decisionVerb(n: string): 'approve' | 'reject' | null {
+  const start = n.replace(/^(?:por favor|pode|agora|ok|entao|please|now)[,\s]+/, '').replace(/^eu\s+/, '');
+  const first = start.match(/^[\p{L}]+/u)?.[0] ?? '';
+  if (DECISION_APPROVE.test(first)) return 'approve';
+  if (DECISION_REJECT.test(first)) return 'reject';
+  return null;
+}
+
+/** "aprova a oferta 2" / "approve offer 2". Sem número devolve number null: o coordenador pede. */
+function offerDecisionIntent(n: string, negated: boolean): Intent | null {
+  if (negated || !new RegExp(`\\b(?:${OFFER_SRC})\\b`).test(n)) return null;
+  const decision = decisionVerb(n);
+  if (!decision) return null;
+  // Falou de merge junto: não dá para saber se é a oferta ou o código; o coordenador pergunta.
+  if (MERGE_WORD.test(n)) return { kind: 'offer-decision', number: null, decision, ambiguous: true };
+  return { kind: 'offer-decision', number: numberAfter(n, OFFER_SRC), decision };
+}
+
+// R06: conversa sobre a oferta (mostrar, perguntar, ajustar) não é decisão de merge nem decisão da oferta.
+const OFFER_NOUN_RE = new RegExp(`\\b(?:${OFFER_SRC})\\b`);
+const OFFER_SHOW_VERB = /\b(mostra|mostre|mostrar|abre|abra|abrir|exibe|exibir|show|open|display|view|see)\b/;
+const OFFER_EDIT_VERB = /\b(ajusta|ajuste|ajustar|muda|mude|mudar|altera|altere|alterar|troca|troque|trocar|corrige|corrija|corrigir|atualiza|atualize|atualizar|edit|change|update|adjust|set)\b/;
+// "por que a oferta 3 é boa?", "quais as fontes da oferta 2?", "what are the risks of offer 2?".
+const OFFER_ASK_CUE = new RegExp([
+  String.raw`\bpor que\b|\bporque\b`,
+  String.raw`\b(quais?|qual)\b.{0,30}\b(fontes?|riscos?|duvidas?|problemas?|incertezas?)\b`,
+  String.raw`\b(fontes?|riscos?|duvidas?|incertezas?)\b`,
+  String.raw`\bwhy\b`,
+  String.raw`\b(what|which)\b.{0,40}\b(sources?|risks?|doubts?|uncertaint\w*|problems?)\b`,
+  String.raw`\b(sources?|risks?)\b`,
+  String.raw`\b(e boa|e bom|vale a pena|is (it|this) good|worth it)\b`,
+].join('|'));
+
+/** "por que ela é boa?" só conta como oferta quando abre assim: pronome solto demais seria conversa. */
+const OFFER_PRONOUN_ASK = /^(por que|porque)\s+ela\b/;
+
+/** "mostra a oferta 3", "abre a oferta 3", "show offer 3". Exige número: é a oferta que o Joel vê. */
+function offerShowIntent(n: string): Intent | null {
+  if (!OFFER_SHOW_VERB.test(n) || !OFFER_NOUN_RE.test(n)) return null;
+  const number = numberAfter(n, OFFER_SRC);
+  return number === null ? null : { kind: 'offer-show', number };
+}
+
+/** "por que a oferta 3 é boa?", "quais as fontes da oferta 2?". Sem número, o coordenador usa a última mostrada. */
+function offerAskIntent(text: string, n: string): Intent | null {
+  if (!OFFER_ASK_CUE.test(n)) return null;
+  if (!OFFER_NOUN_RE.test(n) && !OFFER_PRONOUN_ASK.test(n)) return null;
+  return { kind: 'offer-ask', number: numberAfter(n, OFFER_SRC), question: text.trim() };
+}
+
+/** Campo citado na correção; null quando a frase não diz qual campo mudar. */
+function offerEditField(n: string): OfferEditField | null {
+  if (/\b(publico|audience|target)\b/.test(n)) return 'publico';
+  if (/\b(preco|price)\b/.test(n)) return 'precoHipotese';
+  if (/\b(promessa|promise)\b/.test(n)) return 'promessa';
+  if (/\b(nome|titulo|name|title)\b/.test(n)) return 'nome';
+  if (/\b(diferencial|differential|difference)\b/.test(n)) return 'diferencial';
+  return null;
+}
+
+/**
+ * "ajusta o público da oferta 3 para mães de primeira viagem", "muda o preço da oferta 2 para 47".
+ * O valor é o que vem depois de "para"/"to"; sem ele, a regra não entende e devolve null.
+ */
+function offerEditIntent(text: string, n: string): Intent | null {
+  if (!OFFER_EDIT_VERB.test(n) || !OFFER_NOUN_RE.test(n)) return null;
+  const campo = offerEditField(n);
+  if (!campo) return null;
+  const valor = text.match(/\b(?:para|pra|to|como)\s+(.+)$/i)?.[1]?.trim().replace(/[.!?]+$/, '') ?? '';
+  if (!valor) return null;
+  return { kind: 'offer-edit', number: numberAfter(n, OFFER_SRC), campo, valor };
+}
+
+/** "aprova o vídeo 3" / "approve video 3". Sem número devolve number null: o coordenador pede. */
+function videoDecisionIntent(n: string, negated: boolean): Intent | null {
+  if (negated || !new RegExp(`\\b${VIDEO_SRC}\\b`).test(n)) return null;
+  const decision = decisionVerb(n);
+  if (!decision) return null;
+  if (MERGE_WORD.test(n)) return { kind: 'video-decision', number: null, decision, ambiguous: true };
+  return { kind: 'video-decision', number: numberAfter(n, VIDEO_SRC), decision };
+}
+
+const CANCEL_VERB = /^(?:por favor\s+|pode\s+|agora\s+|ok\s+|entao\s+|please\s+|now\s+)?(cancela|cancele|cancelar|interrompe|interrompa|interromper|para|pare|parar|mata|cancel|stop|kill|abort)\b/;
+
+/** Cancelar TRABALHO exige o número: "cancela o vídeo 3". Sem número cai no cancel de tarefas de código. */
+function jobCancelIntent(n: string, negated: boolean): Intent | null {
+  if (negated || !CANCEL_VERB.test(n)) return null;
+  const video = numberAfter(n, VIDEO_SRC);
+  if (video !== null) return { kind: 'job-cancel', jobKind: 'video', number: video };
+  const radar = numberAfter(n, RADAR_SRC);
+  if (radar !== null) return { kind: 'job-cancel', jobKind: 'radar', number: radar };
+  return null;
+}
+
+// Retomar trabalho também exige o número: "continua o vídeo 3", "resume video 3".
+// Sem número não há como saber qual trabalho, então a regra deixa a fala seguir o fluxo normal.
+const RESUME_VERB = /^(?:por favor\s+|pode\s+|agora\s+|ok\s+|entao\s+|please\s+|now\s+)?(continua|continue|continuar|retoma|retome|retomar|resume|resumir|prossegue|prosseguir)\b/;
+
+function jobResumeIntent(n: string, negated: boolean): Intent | null {
+  if (negated || !RESUME_VERB.test(n)) return null;
+  const video = numberAfter(n, VIDEO_SRC);
+  if (video !== null) return { kind: 'job-resume', jobKind: 'video', number: video };
+  const radar = numberAfter(n, RADAR_SRC);
+  if (radar !== null) return { kind: 'job-resume', jobKind: 'radar', number: radar };
+  return null;
+}
+
+// ---------- Low-ticket e campanha (seções L e M) ----------
+// Vêm ANTES de "aprova a oferta N": "aprovo montar a campanha da oferta 2" não é aprovar a oferta,
+// e "aprovo" sozinho continua sendo o merge. URLs saem do texto original (o normalizado perde maiúsculas).
+
+const HTTPS_URL = /https:\/\/[^\s,;"'<>]+/gi;
+
+/** "a página da oferta 2 é https://…", "o checkout da oferta 2 é …", "as imagens da oferta 2 são …". */
+function offerLinkIntent(text: string, n: string): Intent | null {
+  const urls = (text.match(HTTPS_URL) ?? []).map((u) => u.replace(/[.)\]]+$/, ''));
+  if (!urls.length || !new RegExp(`\\b(?:${OFFER_SRC})\\b`).test(n)) return null;
+  const field = /\b(checkout|pagamento|payment)\b/.test(n) ? 'checkout'
+    : /\b(imagens?|images?|fotos?|criativos?)\b/.test(n) ? 'imagens'
+      : /\b(pagina|page|site|landing)\b/.test(n) ? 'pagina' : null;
+  if (!field) return null;
+  return { kind: 'offer-link', number: numberAfter(n, OFFER_SRC), field, urls: field === 'imagens' ? urls : urls.slice(0, 1) };
+}
+
+const CAMPAIGN_BUILD = /^(?:eu\s+)?(?:aprovo|aprova|aprovar|approve)\s+(?:montar|criar|subir|build|create)\s+(?:a\s+|the\s+)?(?:campanha|campaign)\b/;
+const CAMPAIGN_DRAFT = /\b(?:monta|monte|montar|prepara|prepare|preparar|rascunho|mostra|mostre|draft|prepare)\b.{0,25}\b(?:campanha|campaign)\b/;
+const PRODUCT_CREATE = /\b(?:gera|gere|gerar|cria|crie|criar|faz|faca|fazer|monta|monte|montar|generate|create|build)\b.{0,25}\b(?:produto|product|pdfs?)\b/;
+
+/** Valor por dia na frase: "com R$ 20 por dia", "com 35 reais por dia", "R$ 12,50/dia". */
+function dailyBudgetIn(text: string): number | null {
+  const m = /(?:r\$\s*)?(\d{1,5}(?:[.,]\d{1,2})?)\s*(?:reais)?\s*(?:por dia|\/\s*dia|ao dia|diarios?|diários?|a day|per day)/i.exec(text)
+    ?? /r\$\s*(\d{1,5}(?:[.,]\d{1,2})?)/i.exec(text);
+  if (!m) return null;
+  const v = Number(m[1]!.replace(',', '.'));
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function campaignIntent(text: string, n: string): Intent | null {
+  if (CAMPAIGN_BUILD.test(n)) return { kind: 'campaign-build', number: numberAfter(n, OFFER_SRC), budgetBRL: dailyBudgetIn(text) };
+  if (CAMPAIGN_DRAFT.test(n) && new RegExp(`\\b(?:${OFFER_SRC})\\b`).test(n)) {
+    return { kind: 'campaign-draft', number: numberAfter(n, OFFER_SRC) };
+  }
+  if (PRODUCT_CREATE.test(n) && new RegExp(`\\b(?:${OFFER_SRC})\\b`).test(n)) {
+    return { kind: 'product-create', number: numberAfter(n, OFFER_SRC) };
+  }
+  return null;
+}
+
+// M07: "como está a campanha da oferta 2?", "desempenho da campanha da oferta 2", "how is the campaign for offer 2".
+// É pergunta (normalmente com "?"), então a regra roda fora do bloco que exige !negated e antes do status genérico.
+const CAMPAIGN_STATUS_CUE = /\b(?:como (?:esta|ta|anda|vai)|desempenho|resultado|performance|andamento|status|how is|how's|how’s|how are|performing)\b/;
+
+function campaignStatusIntent(n: string): Intent | null {
+  if (NEGATED.test(n)) return null;
+  if (!/\b(?:campanha|campaign)\b/.test(n)) return null;
+  if (!new RegExp(`\\b(?:${OFFER_SRC})\\b`).test(n)) return null;
+  if (!CAMPAIGN_STATUS_CUE.test(n)) return null;
+  return { kind: 'campaign-status', number: numberAfter(n, OFFER_SRC) };
+}
+
+// Status de trabalho só com NÚMERO ou com frase explícita de status. Pergunta comum com "vídeo"/"radar"
+// ("what is a video codec?", "como está o radar meteorológico hoje?") continua indo para conversa/pesquisa.
+const JOB_STATUS_SRC = new RegExp([
+  // "status do radar", "status do vídeo", "andamento do vídeo", "status of radar"
+  String.raw`\b(status|andamento|progresso)\s+(do|da|de|of|for)\s+(?:${RADAR_SRC}|${VIDEO_SRC})\b`,
+  // "radar status", "video status", "radar progresso"
+  String.raw`\b(?:${RADAR_SRC}|${VIDEO_SRC})\s+(status|progresso)\b`,
+  // "o que o radar achou", "o que o vídeo achou" (o "você" no meio não conta)
+  String.raw`\bo que (?:o |a )?(?:${RADAR_SRC}|${VIDEO_SRC}) achou\b`,
+  // "o radar achou alguma coisa"
+  String.raw`\b(?:${RADAR_SRC}|${VIDEO_SRC}) achou (alguma coisa|algo|nada)\b`,
+  // "como está o (meu|último) radar/vídeo" terminando aí (complemento depois não é status)
+  String.raw`\bcomo (esta|ta|anda|vai) (?:o |a )?(?:meu |minha )?(?:ultimo |ultima )?(?:${RADAR_SRC}|${VIDEO_SRC})\s*[.!?]*$`,
+  // "what did the radar find"
+  String.raw`\bwhat did (?:the )?(?:${RADAR_SRC}|${VIDEO_SRC}) find\b`,
+].join('|'));
+
+/** "como está o vídeo 3?", "status do radar 2", "o que o radar achou?". Sem número = resumo do tipo. */
+function jobStatusIntent(n: string): Intent | null {
+  let jobKind: 'radar' | 'video' | null = null;
+  if (new RegExp(`\\b${RADAR_SRC}\\b`).test(n)) jobKind = 'radar';
+  else if (new RegExp(`\\b${VIDEO_SRC}\\b`).test(n)) jobKind = 'video';
+  if (!jobKind) return null;
+  const number = numberAfter(n, jobKind === 'radar' ? RADAR_SRC : VIDEO_SRC);
+  // Número identifica o trabalho; sem ele, só a frase explícita de status vale.
+  if (number === null && !JOB_STATUS_SRC.test(n)) return null;
+  return { kind: 'job-status', jobKind, number };
+}
+
+/** Número do trabalho citado na frase (só para repetir na pergunta de ambiguidade; a decisão fica nula). */
+export function jobNumberIn(text: string, kind: 'radar' | 'video'): number | null {
+  const n = normalize(text);
+  return numberAfter(n, kind === 'radar' ? OFFER_SRC : VIDEO_SRC);
+}
+
+const SEARCH_VERB = /^(?:por favor\s+|pode\s+|agora\s+|ok\s+)?(vasculha|vasculhe|vasculhar|procura|procure|procurar|busca|busque|buscar|roda|rode|rodar|search|find|look for|run)\b/;
+const CREATE_VERB = /^(?:por favor\s+|pode\s+|agora\s+|ok\s+)?(cria|crie|criar|faz|faca|fazer|monta|monte|montar|gera|gere|gerar|create|make|produce|generate)\b/;
+
+/** Tira do fim do nicho o que é pedido, não tema: "emprego pra mim" → "emprego". */
+function trimQueryTail(query: string): string {
+  return query
+    .replace(/[.!?]+$/, '')
+    .replace(/(?:\s+(?:pra mim|para mim|por favor|for me|please))+$/i, '')
+    .trim();
+}
+
+/** Tira o complemento de "ofertas de X" / "radar sobre X" e devolve o nicho. */
+function radarQuery(text: string): string {
+  const m = text.match(/\b(?:ofertas?|offers?|radar)\b\s*(?:de|do|da|dos|das|para|pra|sobre|on|for|about|em|in)\s+(.+)$/i);
+  if (m?.[1]) return trimQueryTail(m[1]);
+  return trimQueryTail(text
+    .replace(/^.*?\b(?:vasculha|vasculhe|vasculhar|procura|procure|procurar|busca|busque|buscar|roda|rode|rodar|search|find|look for|run)\b/i, '')
+    .replace(/^\s*(?:o|a|as|os|the)\s+/i, '')
+    .replace(/^\s*(?:ofertas?|offers?|radar)\b/i, '')
+    .replace(/^\s*(?:de|do|da|para|pra|sobre|on|for|about)\s+/i, '')
+    .trim());
+}
+
+/** "vasculha ofertas de X", "procura ofertas de X", "roda o radar de X" (PT e EN). */
+function radarSearchIntent(text: string, n: string): Intent | null {
+  const hasTarget = new RegExp(`\\b(?:${OFFER_SRC})\\b`).test(n) || new RegExp(`\\b${RADAR_SRC}\\b`).test(n);
+  if (!hasTarget || !SEARCH_VERB.test(n)) return null;
+  return { kind: 'radar-search', query: radarQuery(text) };
+}
+
+/** "cria um vídeo sobre X", "faz um vídeo de X" (PT e EN). */
+function videoCreateIntent(text: string, n: string): Intent | null {
+  if (!new RegExp(`\\b${VIDEO_SRC}\\b`).test(n) || !CREATE_VERB.test(n)) return null;
+  const m = text.match(/\b(?:videos?|vídeos?)\b\s*(?:sobre|de|do|da|dos|das|a partir de|about|of|on|from)\s+(.+)$/i);
+  const topic = (m?.[1] ?? text.replace(/^.*?\b(?:videos?|vídeos?)\b\s*/i, '')).replace(/[.!?]+$/, '').trim();
+  return { kind: 'video-create', topic };
+}
+
 /** Só as regras, sem modelo. null = nenhuma regra reconheceu. */
 export function ruleIntent(rawText: string, projectNames: string[]): Intent | null {
   const text = stripWakeWord(rawText);
@@ -180,11 +453,50 @@ export function ruleIntent(rawText: string, projectNames: string[]): Intent | nu
 
   if (STOP_SPEAKING.test(n)) return { kind: 'stop-speaking' };
   const negated = NEGATED.test(n) || QUESTION.test(n);
+  // M07: "como está a campanha da oferta 2?" vem antes de tudo que fala de oferta e do status genérico.
+  const campaignStatus = campaignStatusIntent(n);
+  if (campaignStatus) return campaignStatus;
+  // R06: conversa sobre oferta vem antes das regras genéricas. Pergunta ("por que a oferta 3 é boa?")
+  // não é comando de controle, então a regra de pergunta pode achá-la mesmo com "?".
+  if (!negated) {
+    // L/M: links, produto e campanha antes de tudo que fala de oferta ("aprovo montar a campanha da
+    // oferta 2" não pode virar "aprova a oferta 2").
+    const link = offerLinkIntent(text, n);
+    if (link) return link;
+    const campaign = campaignIntent(text, n);
+    if (campaign) return campaign;
+    const edit = offerEditIntent(text, n);
+    if (edit) return edit;
+  }
+  const ask = offerAskIntent(text, n);
+  if (ask) return ask;
+  // F06: decisões de oferta/vídeo e cancelamento por número vêm ANTES de aprovar/rejeitar/cancelar.
+  // "aprova a oferta 2" não é aprovação de merge; "aprovo" sozinho continua sendo.
+  if (!negated) {
+    const show = offerShowIntent(n);
+    if (show) return show;
+    const offer = offerDecisionIntent(n, negated);
+    if (offer) return offer;
+    const video = videoDecisionIntent(n, negated);
+    if (video) return video;
+    const cancelJob = jobCancelIntent(n, negated);
+    if (cancelJob) return cancelJob;
+    const resumeJob = jobResumeIntent(n, negated);
+    if (resumeJob) return resumeJob;
+  }
   if (!negated && APPROVE.test(n)) return { kind: 'approval', decision: 'approve', taskHint: project };
   if (!negated && REJECT.test(n)) return { kind: 'approval', decision: 'reject', taskHint: project };
   if (!negated && CANCEL.test(n) && !SAVE_IDEA.test(n)) return { kind: 'cancel', taskHint: project ?? (/\b(tudo|todos|all|everything)\b/.test(n) ? 'all' : null) };
   if (SAVE_IDEA.test(n)) return { kind: 'save-idea', projectHint: project, text: ideaBody(text, project) };
   if (FIND_IDEAS.test(n)) return { kind: 'find-ideas', projectHint: project, query: '' };
+  // F06: criar trabalho vem antes de "rodar projeto" e de pesquisa ("procura ofertas de X" não é pasta nem fato).
+  const radarSearch = radarSearchIntent(text, n);
+  if (radarSearch) return radarSearch;
+  const videoCreate = videoCreateIntent(text, n);
+  if (videoCreate) return videoCreate;
+  // F07: status do trabalho antes do status genérico de tarefas de código.
+  const jobStatus = jobStatusIntent(n);
+  if (jobStatus) return jobStatus;
   // Rodar/achar pasta vem antes da pesquisa: "procura a pasta X" não é pesquisa na internet.
   // "O Ollama roda no Windows?" é pergunta; "você pode rodar o X?" e "roda o X pra mim?" são pedido.
   const askingToDo = !/\?\s*$/.test(text) || /\b(voce|pode|poderia|consegue|pra mim|para mim|can you|could you|for me|please)\b/.test(n);

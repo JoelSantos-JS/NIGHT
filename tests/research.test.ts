@@ -35,7 +35,7 @@ describe('o que é pesquisa', () => {
 describe('pesquisa no coordenador', () => {
   let mem: PgMemory;
   const llm = new FakeLlm(() => 'conversa local');
-  const night = (...r: FakeResearcher[]) => new NightCoordinator(mem, new NightRouter(llm, async () => []), llm, r);
+  const night = (...r: FakeResearcher[]) => new NightCoordinator(mem, new NightRouter(llm, async () => []), llm, { researchers: r });
   const routeLog = async () => {
     const c = new pg.Client({ connectionString: TEST_URL });
     await c.connect();
@@ -105,7 +105,7 @@ describe('continuação de pesquisa (uso real 04/11)', () => {
   test('logo depois de uma pesquisa, "traz os comentários" volta para o Codex, não para a conversa', async () => {
     const llm = new FakeLlm(() => 'conversa');
     const codex = new FakeResearcher('codex:gpt-6-luna', 'resposta da pesquisa');
-    const n = new NightCoordinator(mem, new NightRouter(llm, async () => []), llm, [codex]);
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => []), llm, { researchers: [codex] });
     await (await n.handle('pesquisa o que acharam do último episódio de Um Amor Diferente do Seu')).followUp;
     const r = await n.handle('é isso, mas me traz a opinião de cada comentário que o pessoal deixou');
     assert.equal(r.intent, 'research');
