@@ -20,7 +20,7 @@ export async function truncateAll(url: string = TEST_URL): Promise<void> {
   const c = new pg.Client({ connectionString: url });
   await c.connect();
   try {
-    await c.query('TRUNCATE route_log, approvals, task_events, tasks, ideas, projects');
+    await c.query('TRUNCATE offer_links, radar_feedback, radar_offers, radar_candidates, radar_cursors, job_events, jobs, route_log, approvals, task_events, tasks, ideas, projects, advisor_opinions');
   } finally {
     await c.end();
   }

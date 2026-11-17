@@ -3,8 +3,8 @@
 // Mudar este arquivo exige revisão do outro agente.
 
 import type {
-  AgentName, Approval, ApprovalAction, Id, Idea, IdeaStatus, Language, Project, Task, TaskEvent,
-  TaskEventType, TaskStatus,
+  AgentName, Approval, ApprovalAction, Id, Idea, IdeaStatus, Job, JobEvent, JobEventType, JobKind, JobStatus,
+  Language, Project, Task, TaskEvent, TaskEventType, TaskStatus,
 } from './types.ts';
 
 // ---------- Voz (blueprint §17) ----------
@@ -73,7 +73,56 @@ export type Intent =
   | { kind: 'set-project-path'; projectHint: string | null; path: string }
   | { kind: 'approval'; decision: 'approve' | 'reject'; taskHint: string | null }
   | { kind: 'cancel'; taskHint: string | null }
+  /** "Vasculha ofertas de X", "roda o radar de X": registra e começa o trabalho quando há trabalhador. */
+  | { kind: 'radar-search'; query: string }
+  /** "Cria um vídeo sobre X": registra e começa o trabalho de vídeo quando há trabalhador. */
+  | { kind: 'video-create'; topic: string }
+  /** "Como está o vídeo 3?", "o que o radar achou?", "status do radar 2". Sem número = resumo do tipo. */
+  | { kind: 'job-status'; jobKind: 'radar' | 'video' | null; number: number | null }
+  /** "Cancela o vídeo 3": só por regra e só com número; sem número cai no cancel de tarefas de código. */
+  | { kind: 'job-cancel'; jobKind: 'radar' | 'video'; number: number }
+  /**
+   * "Continua o vídeo 3", "retoma o radar 2": retoma um trabalho que ficou esperando ou
+   * parou com falha recuperável. Só por regra e só com número.
+   */
+  | { kind: 'job-resume'; jobKind: 'radar' | 'video'; number: number }
+  /** "A página da oferta 2 é https://…", "o checkout da oferta 2 é …", "as imagens da oferta 2 são …" (L03/M05). */
+  | { kind: 'offer-link'; number: number | null; field: 'pagina' | 'checkout' | 'imagens'; urls: string[] }
+  /** "Gera o produto da oferta 2": PDFs, bônus e página de vendas (L01–L03, L07). */
+  | { kind: 'product-create'; number: number | null }
+  /** "Monta a campanha da oferta 2": só o rascunho, sem chamar a Meta (M03). */
+  | { kind: 'campaign-draft'; number: number | null }
+  /**
+   * "Aprovo montar a campanha da oferta 2 com R$ 20 por dia": cria PAUSADA na Meta (M04).
+   * Só por regra, com número e valor; ativar continua com o Joel no Gerenciador.
+   */
+  | { kind: 'campaign-build'; number: number | null; budgetBRL: number | null }
+  /**
+   * "Como está a campanha da oferta 2?": lê o desempenho pelo MCP da Meta, só leitura (M07).
+   * Sem número, o coordenador pergunta qual oferta; nada é estimado além do que a Meta devolveu.
+   */
+  | { kind: 'campaign-status'; number: number | null }
+  /**
+   * "Aprova a oferta 2". number null = falou a oferta sem número: o coordenador pede o número
+   * e NADA é decidido. Aprovar aqui não publica, não gasta e não faz merge.
+   * ambiguous = a frase também fala de merge: o coordenador pergunta qual dos dois, sem gravar nada.
+   */
+  | { kind: 'offer-decision'; number: number | null; decision: 'approve' | 'reject'; ambiguous?: boolean }
+  /** "Aprova o vídeo 3". Mesma regra de segurança da oferta: número null não decide nada. */
+  | { kind: 'video-decision'; number: number | null; decision: 'approve' | 'reject'; ambiguous?: boolean }
+  /** "Mostra a oferta 3": resumo curto para voz e o contexto completo na tela. */
+  | { kind: 'offer-show'; number: number }
+  /**
+   * Pergunta sobre uma oferta ("por que a oferta 3 é boa?", "quais as fontes da oferta 2?").
+   * Sem número, o coordenador usa a última oferta mostrada nesta conversa.
+   */
+  | { kind: 'offer-ask'; number: number | null; question: string }
+  /** "Ajusta o público da oferta 3 para mães de primeira viagem": cria uma versão nova, não sobrescreve. */
+  | { kind: 'offer-edit'; number: number | null; campo: OfferEditField; valor: string }
   | { kind: 'stop-speaking' };
+
+/** Campos da proposta que o Joel pode corrigir por voz. */
+export type OfferEditField = 'publico' | 'promessa' | 'precoHipotese' | 'nome' | 'diferencial';
 
 /** Para onde a resposta foi e por quê: o roteador grava isso (blueprint §5, fim). */
 export interface RouteDecision {
@@ -111,6 +160,37 @@ export interface ActivityEntry {
   reply: string | null;
 }
 
+/** Tarefa nova: o cartão é opcional, porque pedido solto continua virando tarefa. */
+export type NewTask = Omit<Task, 'createdAt' | 'updatedAt' | 'cardId' | 'cardRevision' | 'cardHash'> & {
+  cardId?: string | null;
+  cardRevision?: number | null;
+  cardHash?: string | null;
+};
+
+/** Pedido de trabalho (F01): o job em si nasce sempre em 'queued'. */
+export interface NewJob {
+  kind: JobKind;
+  /** 'voz', 'texto', 'rotina'... */
+  origin: string;
+  /** Mesma chave = mesmo trabalho: o pedido repetido devolve o job que já existe. */
+  idempotencyKey: string;
+  params?: Record<string, unknown>;
+  limits?: Record<string, unknown>;
+  taskId?: Id | null;
+}
+
+export interface JobTransitionOptions {
+  source: string;
+  message: string;
+  /** Se informada e diferente da versão atual, recusa: alguém leu estado velho. */
+  expectedVersion?: number;
+  error?: string | null;
+  /** Estado 'waiting': o que falta (ex.: 'flow'). Fora dele, fica null. */
+  waitingFor?: string | null;
+  /** Referência de artefatos (ex.: 'artefatos:<id>'); sem ela, mantém a anterior. */
+  artifactRef?: string;
+}
+
 export interface Memory {
   /** Só resolve depois de gravado de verdade: aí o Night pode dizer "salvei". */
   saveIdea(idea: NewIdea): Promise<Idea>;
@@ -123,7 +203,8 @@ export interface Memory {
   findProjectByName(name: string): Promise<Project | null>;
   listProjects(): Promise<Project[]>;
 
-  createTask(task: Omit<Task, 'createdAt' | 'updatedAt'>): Promise<Task>;
+  /** Campos do cartão são opcionais: quem cria tarefa hoje não precisa informá-los. */
+  createTask(task: NewTask): Promise<Task>;
   getTask(id: Id): Promise<Task | null>;
   listTasks(filter?: { status?: TaskStatus[]; projectId?: Id }): Promise<Task[]>;
   /** Muda status e grava o evento 'status-changed' na mesma transação. */
@@ -131,6 +212,21 @@ export interface Memory {
   updateTask(id: Id, patch: Partial<Pick<Task, 'worktreePath' | 'branch' | 'baseRef' | 'resultSummary' | 'approvalState'>>): Promise<Task>;
   addTaskEvent(event: { taskId: Id; eventType: TaskEventType; source: string; message: string; artifactRef?: string | null }): Promise<TaskEvent>;
   listTaskEvents(taskId: Id): Promise<TaskEvent[]>;
+
+  /** Mesma idempotencyKey devolve o job existente com created=false, sem criar outro. */
+  createJob(input: NewJob): Promise<{ job: Job; created: boolean }>;
+  getJob(id: Id): Promise<Job | null>;
+  /** Acha pelo número falado dentro do tipo: "vídeo 3" = kind 'video', number 3. */
+  getJobByNumber(kind: JobKind, number: number): Promise<Job | null>;
+  listJobs(filter?: { kind?: JobKind; status?: JobStatus[] }): Promise<Job[]>;
+  /** Muda o estado e grava o evento na mesma transação. Recusa transição inválida ou versão errada. */
+  transitionJob(id: Id, to: JobStatus, opts: JobTransitionOptions): Promise<Job>;
+  /** Evento avulso (ex.: decisão do dono sobre oferta/vídeo pronta). Não muda o estado. */
+  addJobEvent(id: Id, event: { eventType: JobEventType; source: string; message: string; effectKey?: string | null }): Promise<JobEvent>;
+  /** Registra um efeito externo uma única vez por chave; repetir devolve recorded=false. */
+  recordJobEffect(id: Id, effectKey: string, source: string, message: string): Promise<{ recorded: boolean }>;
+  hasJobEffect(id: Id, effectKey: string): Promise<boolean>;
+  listJobEvents(id: Id): Promise<JobEvent[]>;
 
   requestApproval(taskId: Id, action: ApprovalAction, scope: string): Promise<Approval>;
   decideApproval(id: Id, decision: 'approved' | 'rejected'): Promise<Approval>;

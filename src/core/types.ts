@@ -5,7 +5,8 @@ export type Id = string;
 /** Data/hora em ISO 8601, UTC. */
 export type IsoDate = string;
 export type Language = 'en' | 'pt-BR';
-export type AgentName = 'claude' | 'codex';
+// DeepSeek entrou como agente de código (D12/H01): implementa na worktree e é revisado pelo Claude.
+export type AgentName = 'claude' | 'codex' | 'deepseek';
 
 export interface Project {
   id: Id;
@@ -65,6 +66,12 @@ export interface Task {
   branch: string | null;
   /** Commit de onde a worktree saiu: é o que o agente "viu". */
   baseRef: string | null;
+  /** Cartão aprovado que originou a tarefa (S04); null quando o pedido foi solto. */
+  cardId: string | null;
+  /** Revisão do cartão importado: mudar o conteúdo exige subir este número. */
+  cardRevision: number | null;
+  /** Hash do conteúdo exato do cartão: prova qual versão o agente recebeu. */
+  cardHash: string | null;
   createdAt: IsoDate;
   updatedAt: IsoDate;
   resultSummary: string | null;
@@ -90,6 +97,80 @@ export interface TaskEvent {
   message: string;
   /** Caminho de um arquivo de log/diff guardado no disco. */
   artifactRef: string | null;
+}
+
+// ---------- Trabalhos (jobs): coding, radar e vídeo (F01/F02) ----------
+
+/** Tipo do trabalho. Cada um mostra status separado; as tarefas de código continuam em Task. */
+export type JobKind = 'coding' | 'radar' | 'video' | 'lowticket' | 'campanha';
+
+export const JOB_STATUSES = [
+  'queued',
+  'running',
+  'waiting',
+  'retryable',
+  'succeeded',
+  'failed',
+  'cancelled',
+] as const;
+export type JobStatus = (typeof JOB_STATUSES)[number];
+
+/** Estado final: não sai mais dele; 'retryable' é falha recuperável, 'failed' é final. */
+export const FINAL_JOB_STATUSES: readonly JobStatus[] = ['succeeded', 'failed', 'cancelled'];
+
+/** De onde cada estado pode ir. Estado final não aceita mais nada. */
+export const JOB_TRANSITIONS: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
+  queued: ['running', 'cancelled'],
+  running: ['waiting', 'retryable', 'succeeded', 'failed', 'cancelled'],
+  waiting: ['running', 'cancelled', 'failed'],
+  retryable: ['running', 'failed', 'cancelled'],
+  succeeded: [],
+  failed: [],
+  cancelled: [],
+};
+
+export function canTransition(from: JobStatus, to: JobStatus): boolean {
+  return JOB_TRANSITIONS[from].includes(to);
+}
+
+export interface Job {
+  id: Id;
+  kind: JobKind;
+  /** Número falável dentro do tipo ("vídeo 3", "oferta 2"): começa em 1 por tipo. */
+  number: number;
+  /** 'voz', 'texto', 'rotina'... livre: é o pedido, não o tipo. */
+  origin: string;
+  /** Mesma chave = mesmo trabalho: um pedido repetido não cria outro. */
+  idempotencyKey: string;
+  params: Record<string, unknown>;
+  limits: Record<string, unknown>;
+  status: JobStatus;
+  /** O que falta para sair de 'waiting' (ex.: 'flow'); null quando não espera nada. */
+  waitingFor: string | null;
+  /** Sobe a cada transição: quem leu antes de mudar pode recusar update atrasado. */
+  version: number;
+  /** Tarefa de código ligada, quando kind = 'coding'. */
+  taskId: Id | null;
+  artifactRef: string | null;
+  error: string | null;
+  createdAt: IsoDate;
+  updatedAt: IsoDate;
+}
+
+export type JobEventType = 'status-changed' | 'effect-confirmed' | 'progress' | 'error';
+
+export interface JobEvent {
+  id: Id;
+  jobId: Id;
+  timestamp: IsoDate;
+  eventType: JobEventType;
+  fromStatus: JobStatus | null;
+  toStatus: JobStatus | null;
+  /** Quem gerou: 'scheduler', 'worker', 'owner'... */
+  source: string;
+  message: string;
+  /** Chave do efeito externo já confirmado; única por trabalho para não repetir. */
+  effectKey: string | null;
 }
 
 export type ApprovalAction = 'merge' | 'deploy' | 'publish' | 'spend' | 'delete' | 'network';
