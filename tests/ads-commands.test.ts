@@ -168,6 +168,22 @@ describe('coordenador: produto e campanha', () => {
     assert.equal(job?.status, 'succeeded');
   });
 
+  test('dois "aprovo" ao mesmo tempo (painel e voz, ou clique duplo) montam uma vez só', async () => {
+    const n = await oferta(true);
+    await links.set(n, 'pagina', 'https://loja.example/r');
+    await links.set(n, 'imagens', ['https://i.example/1.png']);
+    const painel = make();
+    const [a, b] = await Promise.all([
+      painel.decidir({ tipo: 'campanha', numero: n, valorBRL: 25 }),
+      night.handle(`aprovo montar a campanha da oferta ${n} com R$ 25 por dia`),
+    ]);
+    assert.equal(writer.calls.filter((c) => c === 'campaign').length, 1, 'uma campanha só na Meta');
+    assert.equal(writer.calls.filter((c) => c.startsWith('adset')).length, 1);
+    const textos = [a.text, b.text];
+    assert.equal(textos.filter((t) => /PAUSADA/.test(t)).length, 1, textos.join(' | '));
+    assert.equal(textos.filter((t) => /já está sendo montada/.test(t)).length, 1, textos.join(' | '));
+  });
+
   test('status da campanha: sem montagem e sem conector, nada é inventado (M07)', async () => {
     assert.match((await night.handle('como está a campanha da oferta 9?')).text, /ainda não foi montada/);
     const { job } = await mem.createJob({

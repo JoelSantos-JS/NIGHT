@@ -22,3 +22,11 @@ Registro de 17/11/2026. Atualizar só depois de revisar a mudança e retestar. N
   - sem conta e sem login.
 - **Catálogo público:** 77 apps, **nenhum da Meta nem de anúncios**. Para Radar e anúncios, o caminho é o [MCP oficial da Meta](../research/plano-meta-ads-mcp.md). O Executor fica para integrações futuras, como Drive para os criativos com URL (M05).
 - **Serviço:** fica parado. `executor service start` / `stop` / `status`.
+
+## OpenBot (telas, 18/11/2026)
+
+- **O que é:** app de desktop com agentes persistentes, cada um com sua tela. No NIGHT ele é **só a vitrine**: as 6 telas repassam os pedidos ao NIGHT pelo MCP local (`http://127.0.0.1:4517/mcp`). Guia completo em [openbot-telas.md](openbot-telas.md).
+- **Versão:** `0.73.0`, instalada pelo `OpenBot-0.73.0-x64.exe` do GitHub Releases em `%LOCALAPPDATA%\Programs\OpenBot`. Os dados ficam em `%APPDATA%\OpenBot` e as pastas dos agentes em `~/OpenBot/Agents`.
+- **Verificação:** o SHA-256 `a14b4343…af52cf` confere com o `SHA256SUMS-windows.txt`. A assinatura Authenticode é válida, assinada por SYNTHETIFY LABS.
+- **Atualização:** sai versão quase todo dia. Só atualize depois de retestar o MCP e as permissões das telas.
+- **Licença:** PolyForm Noncommercial, grátis para uso pessoal. Para vender o NIGHT, é preciso a licença comercial ou um acordo com licenses@openbot.run (O01).

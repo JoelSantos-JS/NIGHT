@@ -360,6 +360,14 @@ export class PgRadarStore {
     return rows[0] ? toOffer(rows[0]) : null;
   }
 
+  /** A versão mais nova de cada oferta, em ordem de número (para o painel). */
+  async listLatestOffers(): Promise<RadarOffer[]> {
+    const { rows } = await this.pool.query(
+      'SELECT DISTINCT ON (number) * FROM radar_offers ORDER BY number, version DESC',
+    );
+    return rows.map(toOffer);
+  }
+
   async listOfferVersions(number: number): Promise<RadarOffer[]> {
     const { rows } = await this.pool.query(
       'SELECT * FROM radar_offers WHERE number = $1 ORDER BY version', [number],

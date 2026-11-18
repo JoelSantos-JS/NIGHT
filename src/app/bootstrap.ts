@@ -26,7 +26,7 @@ import { FlowFolderProvider } from '../video/flow-folder.ts';
 import type { Scene, VideoManifest } from '../video/manifest.ts';
 import { Narrator, type Synth } from '../video/narrate.ts';
 import { GitWorktreeManager } from '../workspaces/worktree-manager.ts';
-import { nightDataRoot, NightCoordinator } from './coordinator.ts';
+import { nightDataRoot, NightCoordinator, type CoordinatorOptions } from './coordinator.ts';
 import { ClaudeMcpMetaWriter } from '../ads/meta-writer.ts';
 import { ClaudeMcpMetaReader } from '../ads/meta-reader.ts';
 import { PgOfferLinks } from '../lowticket/links.ts';
@@ -220,7 +220,7 @@ export async function createNight(opts: CreateNightOptions = {}) {
   // NIGHT_CHAT=local continua só o Qwen: a reserva de conversa só entra quando há conversa externa.
   const reserves = chatters.length > 0 && hasDeepSeek ? [new DeepSeekChat()] : [];
   const researchReserves = hasDeepSeek ? [new DeepSeekResearch()] : [];
-  const night = new NightCoordinator(memory, router, llm, {
+  const coordinatorOptions: CoordinatorOptions = {
     researchers,
     tasks: unlock ? tasks : undefined,
     chatters,
@@ -233,7 +233,11 @@ export async function createNight(opts: CreateNightOptions = {}) {
     campaign: { writer: new ClaudeMcpMetaWriter({ workDir: join(paths.data, 'meta-mcp') }), adAccountId: metaAdAccount },
     // Relatório é só leitura: uma sessão por pergunta, com a ferramenta de insights liberada.
     campaignReader: new ClaudeMcpMetaReader({ workDir: join(paths.data, 'meta-mcp'), tool: metaInsightsTool }),
-  });
+  };
+  const night = new NightCoordinator(memory, router, llm, coordinatorOptions);
+  // Uma conversa por coordenador: cada tela do OpenBot (e o painel) ganha o seu, com os mesmos executores
+  // e lojas, começando vazio em vez de herdar a conversa da voz ou de outra tela.
+  const makeCoordinator = () => new NightCoordinator(memory, router, llm, { ...coordinatorOptions, restoreRecent: false });
   // Fecha os pools abertos aqui; o da memória continua sendo fechado por quem chamou.
   // O close da memória também fecha estes: night, night:voz, night:teste e o e2e já fecham
   // a memória no fim, e sem isso o processo ficaria preso num pool esquecido.
@@ -252,5 +256,5 @@ export async function createNight(opts: CreateNightOptions = {}) {
     await close();
     await fecharMemoria();
   };
-  return { memory, llm, llmOk, tasks, stuck, runsTasks: Boolean(unlock), night, close };
+  return { memory, llm, llmOk, tasks, stuck, runsTasks: Boolean(unlock), night, makeCoordinator, radar: radarStore, close };
 }

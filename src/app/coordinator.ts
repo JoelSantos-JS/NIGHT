@@ -195,7 +195,43 @@ export interface CoordinatorOptions {
    * explica que falta o conector; nada é inventado no lugar dos números.
    */
   campaignReader?: MetaInsightsReader;
+  /**
+   * Começar com a conversa recente do banco (padrão: sim). As telas do OpenBot e o painel começam vazios:
+   * a tela Radar não deve herdar o que foi dito na voz ou na tela Código.
+   */
+  restoreRecent?: boolean;
 }
+
+/**
+ * De onde veio o pedido. 'dono' = voz, terminal ou painel do NIGHT (o Joel em pessoa).
+ * 'tela' = uma tela do OpenBot: quem escreve lá é um modelo repassando o pedido, e um modelo
+ * pode inventar um "aprovo". Por isso decisão nunca vale vinda de tela; vai para o painel.
+ */
+export type Origem = 'dono' | 'tela';
+
+export interface HandleOptions {
+  origem?: Origem;
+  /** Link do painel de decisões, mostrado quando uma tela pede uma decisão. */
+  painelUrl?: string;
+}
+
+/** Intenções que são decisão do dono: nunca executam vindas de tela (só pela voz, terminal ou painel). */
+const DECISOES: ReadonlySet<Intent['kind']> = new Set([
+  'approval', 'offer-decision', 'video-decision', 'campaign-build', 'job-cancel', 'cancel',
+]);
+
+/** Decisão tomada no painel do NIGHT: monta a intenção direto, sem depender de reconhecer frase. */
+export type Decisao =
+  | { tipo: 'tarefa'; taskId: string; decisao: 'approve' | 'reject' }
+  | { tipo: 'oferta'; numero: number; decisao: 'approve' | 'reject' }
+  | { tipo: 'video'; numero: number; decisao: 'approve' | 'reject' }
+  | { tipo: 'campanha'; numero: number; valorBRL: number }
+  | { tipo: 'cancelar-trabalho'; kind: 'radar' | 'video'; numero: number }
+  | { tipo: 'rodar' };
+
+const RUN_CONFIRM_MS = 5 * 60_000;
+/** Montagem 'running' parada há mais que isso foi de uma janela que caiu: pode retomar (os efeitos têm chave). */
+const CAMPAIGN_STALE_MS = 30 * 60_000;
 
 /** Trabalhos que o coordenador cria e acompanha pela conversa. */
 type WorkKind = 'radar' | 'video' | 'lowticket';
@@ -223,6 +259,7 @@ export class NightCoordinator {
   private readonly links?: OfferLinksStore;
   private readonly campaign?: { writer: MetaAdsWriter; adAccountId: string | null };
   private readonly campaignReader?: MetaInsightsReader;
+  private readonly restoreRecent: boolean;
 
   constructor(
     private readonly memory: Memory,
@@ -242,6 +279,7 @@ export class NightCoordinator {
     this.links = opts.links;
     this.campaign = opts.campaign;
     this.campaignReader = opts.campaignReader;
+    this.restoreRecent = opts.restoreRecent ?? true;
   }
 
   /** Quando a última pesquisa terminou (para reconhecer continuação). */
@@ -253,23 +291,20 @@ export class NightCoordinator {
   /** Rodar projeto espera o "pode": é uma ação no PC do Joel. */
   private pendingRun: { plan: RunPlan; title: string; at: number } | null = null;
 
-  async handle(text: string, languageOverride?: Language): Promise<Reply> {
+  async handle(text: string, languageOverride?: Language, opts: HandleOptions = {}): Promise<Reply> {
     const language = languageOverride ?? detectLanguage(text);
+    const origem = opts.origem ?? 'dono';
     await this.restoreHistory();
 
-    if (this.pendingRun) {
+    // O "pode" só vale do dono: vindo de tela, o pedido de rodar fica esperando o painel.
+    if (this.pendingRun && origem === 'dono') {
       const pending = this.pendingRun;
       this.pendingRun = null;
       const n = normalize(withoutVocative(text));
-      const fresh = Date.now() - pending.at < 5 * 60_000;
+      const fresh = Date.now() - pending.at < RUN_CONFIRM_MS;
       // Só a confirmação inteira: "roda o outro projeto" não pode confirmar este.
       if (fresh && /^(sim|pode|pode sim|pode rodar|roda|rode|roda ai|manda|manda ver|confirmo|confirma|isso|ok|beleza|yes|go|go ahead|do it|sure)( sim| ai| la| pode| por favor| please)?[.!]*$/.test(n)) {
-        const r = await this.launcher.launch(pending.plan, pending.title);
-        const out = r.ok
-          ? say(language, `Abri o ${pending.title} numa janela própria (${r.detail}). Feche a janela para parar.`, `Opened ${pending.title} in its own window (${r.detail}). Close the window to stop it.`)
-          : say(language, `Não consegui rodar: ${r.detail}.`, `I couldn't run it: ${r.detail}.`);
-        await this.memory.logRoute({ text, language, decision: { intent: { kind: 'run-project', target: pending.title }, model: 'rules', reason: 'confirmado pelo dono', usedPremiumQuota: false }, reply: out });
-        return this.finish(text, language, out, 'run-project', 'rules');
+        return this.runPending(pending, text, language, 'confirmado pelo dono');
       }
       // Qualquer outra coisa cancela o pedido de rodar e segue normal.
     }
@@ -291,6 +326,14 @@ export class NightCoordinator {
       decision = { intent: { kind: 'research', query: text.trim() }, model: 'rules', reason: 'continuação da pesquisa anterior', usedPremiumQuota: false };
     }
     const { intent } = decision;
+    if (origem === 'tela' && DECISOES.has(intent.kind)) {
+      const painel = opts.painelUrl ? ` ${opts.painelUrl}` : '';
+      const out = say(language,
+        `Essa decisão é do Joel e não vale pela tela. Decida no painel do NIGHT${painel} ou fale/digite direto no NIGHT.`,
+        `That decision is the owner's and does not count from a screen. Decide in the NIGHT panel${painel} or say/type it in NIGHT directly.`);
+      await this.memory.logRoute({ text, language, decision: { ...decision, reason: `bloqueado: decisão vinda de tela (${decision.reason})` }, reply: out });
+      return this.finish(text, language, out, intent.kind, 'rules');
+    }
     if (intent.kind === 'research') {
       // O route_log desta vai depois, com o modelo que de fato respondeu e o uso de cota.
       const started = Date.now();
@@ -338,7 +381,15 @@ export class NightCoordinator {
       case 'video-decision': out = await this.decideJob('video', intent, language, text); break;
       case 'set-project-path': out = await this.setProjectPath(intent, language); break;
       case 'show-diff': ({ text: out, detail } = await this.showDiff(intent, language)); break;
-      case 'run-project': out = await this.prepareRun(intent.target, language); break;
+      case 'run-project': {
+        out = await this.prepareRun(intent.target, language);
+        if (origem === 'tela' && this.pendingRun) {
+          const painel = opts.painelUrl ? ` ${opts.painelUrl}` : '';
+          out += say(language, ` Para rodar, confirme no painel do NIGHT${painel} em até 5 minutos.`,
+            ` To run it, confirm in the NIGHT panel${painel} within 5 minutes.`);
+        }
+        break;
+      }
       case 'find-folder': out = await this.findFolder(intent.target, language); break;
       case 'stop-speaking': out = ''; break;
     }
@@ -395,22 +446,29 @@ export class NightCoordinator {
     return { text: await this.chat(text, language, extraContext), model: this.llm.model, reason: failures.length ? `conversa local (falharam: ${failures.join('; ')})` : 'conversa local', premium: false };
   }
 
-  private restored = false;
+  /** Restauração do histórico, uma só por coordenador, mesmo com duas falas chegando juntas (telas). */
+  private restoring: Promise<void> | null = null;
   /** Pesquisas em andamento (pergunta → quando começou), para responder "tá pesquisando ainda?". */
   private researching = new Map<string, number>();
 
   /** Depois de reiniciar, a conversa recente vem do banco: o Night não "esquece" o que ele e os outros disseram. */
-  private async restoreHistory(): Promise<void> {
-    if (this.restored) return;
-    this.restored = true;
+  private restoreHistory(): Promise<void> {
+    if (!this.restoreRecent) return Promise.resolve();
+    this.restoring ??= this.loadHistory();
+    return this.restoring;
+  }
+
+  private async loadHistory(): Promise<void> {
     const past = await this.memory.recentActivity(HISTORY_TURNS);
     // As respostas antigas do próprio Qwen não voltam: o 1.7B copia a si mesmo e entra em loop ("Vou ver o
     // que é real" em toda resposta, uso real 04/11). O que os outros agentes e as regras disseram volta.
     // A troca inteira sai (pergunta e resposta): só a pergunta sozinha fazia ele responder a pergunta velha.
-    this.history = past.filter((a) => a.intent !== 'chat' || !a.model.startsWith('qwen')).flatMap((a): ConversationTurn[] => [
+    const restored = past.filter((a) => a.intent !== 'chat' || !a.model.startsWith('qwen')).flatMap((a): ConversationTurn[] => [
       { role: 'owner', text: a.text, at: a.at },
       ...(a.reply ? [{ role: 'night' as const, text: a.reply, at: a.at }] : []),
-    ]).slice(-HISTORY_TURNS * 2);
+    ]);
+    // O que já entrou nesta conversa enquanto o banco respondia fica depois, não é apagado.
+    this.history = [...restored, ...this.history].slice(-HISTORY_TURNS * 2);
   }
 
   /** Resposta que chega depois: a pergunta já está no histórico, só entra a fala do Night. */
@@ -1018,9 +1076,18 @@ export class NightCoordinator {
       idempotencyKey: `campanha:oferta:${intent.number}:v${found.offer.version}`,
       params: { offerNumber: intent.number, offerVersion: found.offer.version },
     });
+    // Dois "aprovo" ao mesmo tempo (painel com clique duplo, voz e painel juntos, duas janelas) não podem
+    // montar duas vezes: a passagem para 'running' com a versão lida é a vaga, e só um pega.
+    const montando = say(language, `A campanha da oferta ${intent.number} já está sendo montada; espere terminar.`,
+      `The campaign for offer ${intent.number} is already being built; wait for it to finish.`);
+    if (job.status === 'running' && Date.now() - Date.parse(job.updatedAt) < CAMPAIGN_STALE_MS) return { text: montando };
     // Repetir a frase depois de uma parada (retryable) retoma do que já foi criado: os efeitos têm chave.
     if (job.status === 'queued' || job.status === 'retryable') {
-      await this.memory.transitionJob(job.id, 'running', { source: 'owner', message: 'montagem aprovada pelo Joel' });
+      try {
+        await this.memory.transitionJob(job.id, 'running', { source: 'owner', message: 'montagem aprovada pelo Joel', expectedVersion: job.version });
+      } catch {
+        return { text: montando };
+      }
     }
     const r = await buildPausedCampaign(
       { memory: this.memory, writer: this.campaign.writer, adAccountId: this.campaign.adAccountId },
@@ -1325,6 +1392,98 @@ export class NightCoordinator {
     this.pendingRun = { plan, title: found.name, at: Date.now() };
     const where = plan.dir === found.dir ? found.dir : plan.dir;
     return say(language, `Achei o ${found.name} em ${where}. ${how} Posso rodar?`, `Found ${found.name} at ${where}. ${how} Shall I run it?`);
+  }
+
+  private async runPending(
+    pending: { plan: RunPlan; title: string }, text: string, language: Language, reason: string,
+  ): Promise<Reply> {
+    const r = await this.launcher.launch(pending.plan, pending.title);
+    const out = r.ok
+      ? say(language, `Abri o ${pending.title} numa janela própria (${r.detail}). Feche a janela para parar.`, `Opened ${pending.title} in its own window (${r.detail}). Close the window to stop it.`)
+      : say(language, `Não consegui rodar: ${r.detail}.`, `I couldn't run it: ${r.detail}.`);
+    await this.memory.logRoute({ text, language, decision: { intent: { kind: 'run-project', target: pending.title }, model: 'rules', reason, usedPremiumQuota: false }, reply: out });
+    return this.finish(text, language, out, 'run-project', 'rules');
+  }
+
+  /** Pedido de rodar projeto esperando confirmação (para o painel mostrar); vencido não aparece. */
+  pendingRunInfo(): { title: string; dir: string; at: number } | null {
+    const p = this.pendingRun;
+    if (!p || Date.now() - p.at >= RUN_CONFIRM_MS) return null;
+    return { title: p.title, dir: p.plan.dir, at: p.at };
+  }
+
+  /**
+   * Decisão do dono tomada no painel do NIGHT. Usa os mesmos tratadores da voz (teto, campanha
+   * pausada, efeito único por chave); só pula o reconhecimento da frase.
+   */
+  async decidir(d: Decisao, language: Language = 'pt-BR'): Promise<Reply> {
+    await this.restoreHistory();
+    const verbo = (x: 'approve' | 'reject') => (x === 'approve' ? 'aprovo' : 'rejeito');
+    let text: string;
+    let intent: Intent;
+    let out: string;
+    let detail: string | undefined;
+    switch (d.tipo) {
+      case 'tarefa': {
+        intent = { kind: 'approval', decision: d.decisao, taskHint: null };
+        text = `${verbo(d.decisao)} a tarefa ${d.taskId} (painel)`;
+        out = await this.decideTask(d.taskId, d.decisao, language);
+        break;
+      }
+      case 'oferta':
+      case 'video': {
+        const kind = d.tipo === 'oferta' ? 'offer-decision' : 'video-decision';
+        const decisao = { kind, number: d.numero, decision: d.decisao } as const;
+        intent = decisao;
+        text = `${verbo(d.decisao)} ${d.tipo === 'oferta' ? 'a oferta' : 'o vídeo'} ${d.numero} (painel)`;
+        out = await this.decideJob(d.tipo === 'oferta' ? 'radar' : 'video', decisao, language, text);
+        break;
+      }
+      case 'campanha': {
+        // Valor digitado pelo Joel; o teto (R$ 200) e o resto das regras ficam no buildPausedCampaign.
+        if (!Number.isFinite(d.valorBRL) || d.valorBRL <= 0) {
+          return this.finish('campanha sem valor (painel)', language,
+            say(language, 'Preciso do valor por dia, maior que zero.', 'I need a daily amount above zero.'), 'campaign-build', 'rules');
+        }
+        const build = { kind: 'campaign-build', number: d.numero, budgetBRL: d.valorBRL } as const;
+        intent = build;
+        text = `aprovo montar a campanha da oferta ${d.numero} com R$ ${d.valorBRL} por dia (painel)`;
+        ({ text: out, detail } = await this.campaignBuild(build, text, language));
+        break;
+      }
+      case 'cancelar-trabalho': {
+        const cancelar = { kind: 'job-cancel', jobKind: d.kind, number: d.numero } as const;
+        intent = cancelar;
+        text = `cancela o ${d.kind === 'radar' ? 'radar' : 'vídeo'} ${d.numero} (painel)`;
+        out = await this.cancelJob(cancelar, language);
+        break;
+      }
+      case 'rodar': {
+        const pending = this.pendingRun;
+        this.pendingRun = null;
+        if (!pending || Date.now() - pending.at >= RUN_CONFIRM_MS) {
+          return this.finish('pode rodar (painel)', language,
+            say(language, 'Não tem projeto esperando para rodar (o pedido vence em 5 minutos).', 'No project is waiting to run (requests expire in 5 minutes).'),
+            'run-project', 'rules');
+        }
+        return this.runPending(pending, 'pode rodar (painel)', language, 'confirmado pelo dono no painel');
+      }
+    }
+    await this.memory.logRoute({ text, language, decision: { intent, model: 'rules', reason: 'painel do NIGHT', usedPremiumQuota: false }, reply: out });
+    return { ...this.finish(text, language, out, intent.kind, 'rules'), ...(detail ? { detail } : {}) };
+  }
+
+  /** Aprovação de uma tarefa de código pelo id (painel): só a que está de fato esperando. */
+  private async decideTask(taskId: string, decision: 'approve' | 'reject', language: Language): Promise<string> {
+    const target = (await this.waitingTasks()).find((t) => t.id === taskId);
+    if (!target) return say(language, 'Essa tarefa não está esperando aprovação.', 'That task is not waiting for approval.');
+    if (!this.tasks) return say(language, 'Quem cuida das tarefas é a outra janela do Night; aprove por lá.', 'Another Night window handles tasks; approve there.');
+    try {
+      const r = decision === 'approve' ? await this.tasks.approve(target.id) : await this.tasks.reject(target.id);
+      return r.message;
+    } catch (err) {
+      return say(language, `Não consegui: ${(err as Error).message}.`, `I couldn't: ${(err as Error).message}.`);
+    }
   }
 }
 

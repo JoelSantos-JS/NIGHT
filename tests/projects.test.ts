@@ -82,6 +82,22 @@ describe('achar pasta e rodar projeto (uso real 04/11)', () => {
       assert.equal(launched.length, 0, '"roda o site node" pergunta de novo, não confirma o anterior');
     });
 
+    test('pela tela do OpenBot, "pode" não roda; o painel confirma', async () => {
+      const n = make();
+      const tela = { origem: 'tela' as const, painelUrl: 'http://127.0.0.1:4517/painel' };
+      const ask = await n.handle('roda o AWS Prepping pra mim', undefined, tela);
+      assert.match(ask.text, /Posso rodar\? Para rodar, confirme no painel do NIGHT http:\/\/127\.0\.0\.1:4517\/painel em até 5 minutos\.$/);
+      await n.handle('pode', undefined, tela);
+      assert.equal(launched.length, 0, 'modelo da tela não confirma');
+      assert.equal(n.pendingRunInfo()?.title, 'AWS PREP', 'pedido continua esperando o painel');
+      const ok = await n.decidir({ tipo: 'rodar' });
+      assert.match(ok.text, /^Abri o AWS PREP numa janela própria/);
+      assert.equal(launched.length, 1);
+      assert.equal(n.pendingRunInfo(), null);
+      assert.match((await n.decidir({ tipo: 'rodar' })).text, /Não tem projeto esperando para rodar/);
+      assert.equal(launched.length, 1, 'confirmar de novo não roda duas vezes');
+    });
+
     test('procurar sem nome pergunta qual', async () => {
       assert.equal((await make().handle('procura aqui no meu PC as pastas')).text, 'Qual pasta? Fala o nome dela.');
     });

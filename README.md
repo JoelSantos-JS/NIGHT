@@ -11,6 +11,7 @@ Requisitos: `NIGHT_BLUEPRINT_V2.md` · Plano: `docs/PLANO_INICIAL.md` · Decisõ
 |---|---|
 | `pnpm night:voz` | Voz automática: fale, e quando você parar (~1,3 s) ele responde. Enter pausa o microfone |
 | `pnpm night` | O mesmo por texto |
+| `pnpm night:servidor` | Só o servidor das telas do OpenBot e o painel de decisões (`http://127.0.0.1:4517/painel`); a voz e o texto já sobem ele sozinhos. Ver `docs/agents/openbot-telas.md` |
 | `pnpm night:teste "frase 1 \| frase 2"` | Testa por voz sem microfone (o Kokoro fala a frase, o Whisper ouve) |
 | `pnpm night:teste --arquivo audio.wav` | Testa com um áudio seu |
 

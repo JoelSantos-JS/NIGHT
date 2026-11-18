@@ -385,6 +385,76 @@ describe('NightCoordinator', () => {
     assert.equal((await mem.listPendingApprovals()).length, 0);
   });
 
+  test('decisão vinda de tela do OpenBot não executa e aponta o painel', async () => {
+    const { job } = await mem.createJob({ kind: 'video', origin: 'texto', idempotencyKey: 'tela-v1' });
+    await mem.transitionJob(job.id, 'running', { source: 'worker', message: 'começou' });
+    await mem.transitionJob(job.id, 'succeeded', { source: 'worker', message: 'pronto' });
+    const tela = { origem: 'tela' as const, painelUrl: 'http://127.0.0.1:4517/painel' };
+
+    for (const frase of [
+      'aprova o vídeo 1', 'rejeita o vídeo 1', 'aprova a oferta 1', 'aprovo',
+      'aprovo montar a campanha da oferta 1 com R$ 20 por dia', 'cancela o vídeo 1', 'cancela a tarefa',
+    ]) {
+      const r = await night.handle(frase, undefined, tela);
+      assert.match(r.text, /^Essa decisão é do Joel e não vale pela tela\. Decida no painel do NIGHT http:\/\/127\.0\.0\.1:4517\/painel/, frase);
+      assert.equal(r.model, 'rules');
+    }
+    const progress = (await mem.listJobEvents(job.id)).filter((e) => e.eventType === 'progress');
+    assert.equal(progress.length, 0, 'nenhuma decisão gravada');
+    assert.equal((await mem.getJob(job.id))?.status, 'succeeded');
+    assert.equal((await mem.listJobs({ kind: 'campanha' })).length, 0);
+    const log = await mem.recentActivity(1);
+    assert.equal(log[0]!.text, 'cancela a tarefa');
+    assert.match(log[0]!.reply ?? '', /não vale pela tela/, 'tentativa fica registrada');
+  });
+
+  test('duas falas juntas no começo não perdem o histórico; tela começa sem a conversa dos outros', async () => {
+    await night.handle('Meu nome é Joel');
+    const n = new NightCoordinator(mem, new NightRouter(llm, async () => (await mem.listProjects()).map((p) => p.name)), llm);
+    await Promise.all([n.handle('primeira pergunta'), n.handle('segunda pergunta')]);
+    await n.handle('terceira pergunta');
+    const sent = llm.calls.at(-1)!.messages.map((m) => m.content);
+    assert.ok(sent.includes('Meu nome é Joel'), 'histórico do banco entrou');
+    assert.ok(sent.includes('primeira pergunta') && sent.includes('segunda pergunta'), 'falas simultâneas não sumiram');
+
+    const tela = new NightCoordinator(mem, new NightRouter(llm, async () => []), llm, { restoreRecent: false });
+    await tela.handle('oi, tela', undefined, { origem: 'tela' });
+    const daTela = llm.calls.at(-1)!.messages.map((m) => m.content);
+    assert.ok(!daTela.includes('Meu nome é Joel'), 'tela não herda a conversa da voz');
+  });
+
+  test('pedido comum vindo de tela funciona igual', async () => {
+    const r = await night.handle('Salva uma ideia para o Soaken: modo escuro', undefined, { origem: 'tela' });
+    assert.equal(r.text, 'Salvei a ideia no Soaken.');
+  });
+
+  test('painel decide pelo mesmo tratador da voz', async () => {
+    const { job } = await mem.createJob({ kind: 'video', origin: 'texto', idempotencyKey: 'painel-v1' });
+    await mem.transitionJob(job.id, 'running', { source: 'worker', message: 'começou' });
+    await mem.transitionJob(job.id, 'succeeded', { source: 'worker', message: 'pronto' });
+
+    const r = await night.decidir({ tipo: 'video', numero: 1, decisao: 'approve' });
+    assert.equal(r.text, 'Aprovei o vídeo 1. Isso não publica, não gasta e não faz merge.');
+    const progress = (await mem.listJobEvents(job.id)).filter((e) => e.eventType === 'progress');
+    assert.equal(progress.length, 1);
+    assert.match(progress[0]!.message, /vídeo aprovado pelo Joel/);
+    const log = await mem.recentActivity(1);
+    assert.equal(log[0]!.text, 'aprovo o vídeo 1 (painel)');
+  });
+
+  test('painel: campanha sem valor válido é recusada antes de tudo', async () => {
+    for (const valorBRL of [0, -5, Number.NaN]) {
+      const r = await night.decidir({ tipo: 'campanha', numero: 1, valorBRL });
+      assert.equal(r.text, 'Preciso do valor por dia, maior que zero.');
+    }
+    assert.equal((await mem.listJobs({ kind: 'campanha' })).length, 0);
+  });
+
+  test('painel: tarefa que não está esperando aprovação não é decidida', async () => {
+    const r = await night.decidir({ tipo: 'tarefa', taskId: 'nao-existe', decisao: 'approve' });
+    assert.equal(r.text, 'Essa tarefa não está esperando aprovação.');
+  });
+
   test('merge misturado com vídeo fica ambíguo: pergunta e não grava evento nem Approval', async () => {
     const { job } = await mem.createJob({ kind: 'video', origin: 'texto', idempotencyKey: 'amb-v1' });
     await mem.transitionJob(job.id, 'running', { source: 'worker', message: 'começou' });
