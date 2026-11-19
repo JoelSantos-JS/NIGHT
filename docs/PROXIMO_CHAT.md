@@ -13,7 +13,7 @@ A passagem anterior, de 17/11, tem o detalhe de Radar, low-ticket, campanha na M
 
 - **Tudo commitado e no GitHub:** https://github.com/JoelSantos-JS/NIGHT, `main` em `8b79fea`.
   - **O repositório está PÚBLICO.** O Joel decidiu subir assim e disse que muda para privado depois. Enquanto estiver público, **nunca commite chave, e-mail ou dado pessoal**.
-- **Testes:** `pnpm test` roda 695 testes e o `pnpm typecheck` está limpo.
+- **Testes:** `pnpm test` roda 717 testes (19/11) e o `pnpm typecheck` está limpo.
   - De 1 a 4 testes do agendador (`tests/scheduler.test.ts`, que esperam por tempo) falham de forma alternada quando o PC está carregado (voz, OpenBot e Night abertos). Rodando de novo, passam. Ninguém mexeu nesse código.
 - **Codex sem cota:** a cota semanal da conta do Codex está em 100% até **sexta, 20/11, às 13:57**. O OpenBot lê esse número e se bloqueia sozinho; o NIGHT não lê e segue chamando o Luna até a OpenAI recusar (aí cai no Claude).
 - **Chave do Groq:** passou pelo chat. O Joel precisa trocá-la no painel do Groq e salvar a nova em `C:\Users\Joel\.groq\api_key`.
@@ -45,7 +45,7 @@ A passagem anterior, de 17/11, tem o detalhe de Radar, low-ticket, campanha na M
   - `NIGHT_STT=auto` usa o Groq quando há chave e cai no Whisper local se ele falhar. `local` desliga o Groq.
   - O plano grátis aceita 20 pedidos por minuto.
 - **Só a voz do dono** ([services/speech/night_speech/dono.py](../services/speech/night_speech/dono.py)): impressão de voz WeSpeaker pelo sherpa-onnx.
-  - O perfil está em `D:/NIGHT-data/voz-dono.npy`, montado das 13 falas da calibragem.
+  - O perfil está em `D:/NIGHT-data/voz-dono.npy`: metade das 13 falas da calibragem, metade de 8 falas ao vivo (19/11).
   - O teste roda antes do Groq, então som que não é o Joel nem gasta cota.
 
 ### 2.3 Pesquisa no PC (D-017)
@@ -58,18 +58,34 @@ A passagem anterior, de 17/11, tem o detalhe de Radar, low-ticket, campanha na M
 - "Os dois" roda as duas sessões separadas e um modelo sem ferramentas junta as respostas. Assim nenhuma sessão lê arquivo e abre página ao mesmo tempo.
 - Teste real: o pedido para ler `~/.groq/api_key` foi recusado.
 
+### 2.4 Voz ao vivo no painel (D-018, 19/11)
+- Botão **Voz ao vivo** no topo do painel (`/painel`): a voz da OpenAI pelo login do ChatGPT, como no OpenBot.
+  - O áudio vai direto do navegador para a OpenAI. O NIGHT só troca a oferta WebRTC por [src/app/voz-ao-vivo.ts](../src/app/voz-ao-vivo.ts).
+  - Uma ponte do Codex (sem shell, arquivos, internet nem MCP) só pode chamar `pedir_ao_night`. A resposta do NIGHT volta falada.
+  - Pedidos entram com origem `'tela'`: decisões (aprovar, cancelar, campanha com R$) devolvem o link do painel.
+  - Pedido e resposta aparecem na conversa do agente NIGHT no painel; a legenda ao vivo fica embaixo do topo.
+- Codex usado: o oficial 0.170 que o OpenBot baixou (`%APPDATA%OpenBotprovider-runtimescodex`). Outro: `NIGHT_CODEX_LIVE_BIN`.
+- **Ainda não testada com áudio:** em 19/11 a OpenAI recusou a voz pela cota semanal do Codex (volta 20/11, 13:57). Texto comum passa.
+  - Prova sem navegador: `npx tsx scripts/voz-ao-vivo-prova.ts` (tem que dizer "OK ... a OpenAI respondeu a oferta").
+- Tela feita pelo DeepSeek e revisada; ponte, rotas e segurança feitas pelo Claude.
+- No celular o painel já passava da borda direita antes (o botão novo fica nessa parte cortada). Arrumar o layout estreito quando for vender.
+
 ---
 
 ## 3. Pendências, em ordem
 
-### 3.1 Voz: ajuste que ficou no meio (primeiro)
-- **Limite da voz do dono está alto demais ao vivo.** Na calibragem, o Joel deu 0,80 a 0,93 de semelhança. Ao vivo deu 0,66 a 0,68 e foi rejeitado com o padrão do código, `NIGHT_SPEAKER_MIN=0.70`.
-- **Como a janela de voz ficou aberta (provisório):** foi aberta à mão com `NIGHT_SPEAKER_MIN=0.58` e `NIGHT_SAVE_AUDIO_DIR=D:\NIGHT-data\falas-ao-vivo`, gravando as falas de hoje para ajustar o limite.
-- **O que fazer:**
-  1. Medir as falas de `D:\NIGHT-data\falas-ao-vivo` contra o perfil, usando `bench_dono.py` como base.
-  2. Remontar o perfil incluindo essas falas (média da calibragem + ao vivo) e regravar `voz-dono.npy`.
-  3. Escolher um limite com margem: acima das outras vozes (até 0,66 com som de Bluetooth) e abaixo do Joel ao vivo. Se não houver margem, avisar o Joel e manter o limite baixo.
-  4. Trocar o padrão em `dono.py` e **parar de gravar falas**: abrir de novo pelo `Night.cmd`, sem as variáveis.
+### 3.0 Testar a voz ao vivo (depois de 20/11, 13:57)
+1. `npx tsx scripts/voz-ao-vivo-prova.ts` tem que dar OK.
+2. Abrir o Night (`Night.cmd` ou `pnpm night:servidor`), abrir `http://127.0.0.1:4517/painel` no Chrome ou Edge e clicar em **Voz ao vivo**.
+3. Testar: "o que tá rodando?", "mostra a oferta 1", uma pesquisa (resposta chega depois e é falada) e "aprovo a oferta 1" (tem que mandar para o painel).
+4. Se a ponte repetir o pedido em vez de responder, ou a voz ficar muda, olhar `/api/voz/eventos` e os testes de `tests/voz-ao-vivo.test.ts`.
+
+
+### 3.1 Voz: limite da voz do dono (feito em 19/11)
+- **Perfil remontado:** metade calibragem, metade 8 falas ao vivo que eram claramente o Joel. **Limite padrão agora 0,68.** Os números estão em D-016 ([DECISIONS.md](DECISIONS.md)).
+  - Perfil antigo guardado em `D:/NIGHT-data/voz-dono-calibragem-18-11.npy`.
+- **Margem curta:** um vídeo em inglês com voz grave pode passar. As vozes em português, incluindo a do Night, ficam bem abaixo.
+- **Falta testar ao vivo:** abrir pelo `Night.cmd`, sem `NIGHT_SPEAKER_MIN` e sem `NIGHT_SAVE_AUDIO_DIR`. Se o Joel ainda for recusado, olhar o `other_voice` que aparece na recusa.
 - **Frases fantasma:** o Whisper/Groq ainda inventa uma ou outra ("Thanks for watching"). A lista `HALLUCINATIONS` em `src/app/voice.ts` já filtra algumas.
 
 ### 3.2 Ligar o NIGHT às telas do OpenBot
@@ -107,11 +123,13 @@ A passagem anterior, de 17/11, tem o detalhe de Radar, low-ticket, campanha na M
 | Variável | Para quê |
 |---|---|
 | `NIGHT_PORT` | Porta do servidor das telas e do painel (padrão 4517) |
+| `NIGHT_CODEX_LIVE_BIN` | Codex da voz ao vivo (padrão: o mais novo do OpenBot, >= 0.156) |
+| `NIGHT_VOZ_LIVE_MODEL`, `NIGHT_VOZ_LIVE_VOICE` | Modelo da ponte (padrão do Codex, esforço baixo) e voz da OpenAI (marin, cedar...) |
 | `NIGHT_STT` | `auto` (Groq se houver chave, senão local), `groq` ou `local` |
 | `GROQ_API_KEY` ou `~/.groq/api_key` | Chave do Groq (fora do repositório) |
 | `NIGHT_GROQ_STT_MODEL` | Padrão `whisper-large-v3` |
 | `NIGHT_SPEAKER` | `off` desliga o filtro da voz do dono |
-| `NIGHT_SPEAKER_MIN` | Semelhança mínima (código: 0.70; **precisa de ajuste**, ver 3.1) |
+| `NIGHT_SPEAKER_MIN` | Semelhança mínima (padrão 0.68, ajustado em 19/11) |
 | `NIGHT_SPEAKER_MODEL`, `NIGHT_SPEAKER_PROFILE` | Modelo WeSpeaker e perfil `.npy` |
 | `NIGHT_PARAKEET_DIR` | Modelo Parakeet (só para medição) |
 | `NIGHT_SAVE_AUDIO_DIR` | Guarda cada fala em WAV (só para calibrar; desligar depois) |

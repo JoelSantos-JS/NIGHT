@@ -241,3 +241,112 @@ describe('lerDecisao', () => {
     assert.equal(typeof p({ tipo: 'apagar-tudo' }), 'string');
   });
 });
+
+describe('voz ao vivo pelas rotas do painel', () => {
+  /** Codex falso: o suficiente para abrir a voz e devolver o SDP. */
+  class RpcFalso {
+    pedidos: { method: string; params: object }[] = [];
+    paradas = 0;
+    private readonly ouvintes: Record<string, ((arg: any) => void)[]> = {};
+
+    iniciar(): void {}
+    on(evento: string, fn: (arg: any) => void): void {
+      (this.ouvintes[evento] ??= []).push(fn);
+    }
+    async pedir(method: string, params: object): Promise<Record<string, unknown>> {
+      this.pedidos.push({ method, params });
+      if (method === 'config/read') return { config: {} };
+      if (method === 'thread/start') return { thread: { id: 't1' } };
+      if (method === 'thread/realtime/start') {
+        setImmediate(() => this.emitir('notificacao', { method: 'thread/realtime/sdp', params: { threadId: 't1', sdp: 'v=0 resposta' } }));
+      }
+      return {};
+    }
+    avisar(_method: string, _params?: object): void {}
+    respostas: { id: number | string; result: any }[] = [];
+    responder(id: number | string, result: object): void { this.respostas.push({ id, result }); }
+    responderErro(_id: number | string, _code: number, _message: string): void {}
+    parar(): void { this.paradas += 1; }
+    emitir(evento: string, m: object): void { for (const fn of this.ouvintes[evento] ?? []) fn(m); }
+  }
+
+  let servidor: NightServer;
+  let falso: RpcFalso;
+  let token: string;
+  let origin: string;
+  let sessionId: string;
+  const coords: FakeCoord[] = [];
+
+  const post = (caminho: string, dados: object) =>
+    http(servidor.port, 'POST', caminho, JSON.stringify(dados), { 'Content-Type': 'application/json', Origin: origin });
+
+  before(async () => {
+    falso = new RpcFalso();
+    const deps: ServerDeps = {
+      makeCoordinator: () => { const c = new FakeCoord(); coords.push(c); return c; },
+      memory: {
+        listJobs: async () => [],
+        listTasks: async () => [],
+        listPendingApprovals: async () => [],
+        getProject: async () => null,
+      },
+    };
+    servidor = await startNightServer(deps, { port: 0, criarClienteVoz: () => falso });
+    token = /const TOKEN = "([0-9a-f]+)"/.exec((await http(servidor.port, 'GET', '/painel')).body)![1]!;
+    origin = 'http://127.0.0.1:' + servidor.port;
+  });
+  after(async () => { await servidor.close(); });
+
+  test('a) /api/voz/iniciar sem token é recusado', async () => {
+    const r = await post('/api/voz/iniciar', { sdp: 'v=0 oferta' });
+    assert.equal(r.status, 403);
+  });
+
+  test('b) /api/voz/iniciar recusa oferta de áudio inválida', async () => {
+    const r = await post('/api/voz/iniciar', { token, sdp: 'abc' });
+    assert.equal(r.status, 400);
+  });
+
+  test('c) /api/voz/iniciar com oferta válida devolve o SDP da OpenAI', async () => {
+    const r = await post('/api/voz/iniciar', { token, sdp: 'v=0 oferta' });
+    assert.equal(r.status, 200);
+    const corpo = JSON.parse(r.body) as { sessionId: string; sdp: string };
+    assert.equal(corpo.sdp, 'v=0 resposta');
+    assert.equal(typeof corpo.sessionId, 'string');
+    sessionId = corpo.sessionId;
+  });
+
+  test('d) /api/voz/eventos com token mostra a sessão ativa', async () => {
+    const r = await post('/api/voz/eventos', { token });
+    assert.equal(r.status, 200);
+    const corpo = JSON.parse(r.body) as { ativa: boolean; eventos: unknown[] };
+    assert.equal(corpo.ativa, true);
+    assert.ok(Array.isArray(corpo.eventos));
+  });
+
+  test('pedido falado entra como tela: decisão nunca executa pela voz ao vivo', async () => {
+    falso.emitir('pedido', { id: 9, method: 'item/tool/call',
+      params: { threadId: 't1', namespace: 'night', tool: 'pedir_ao_night', arguments: { pedido: 'aprovo a oferta 1' } } });
+    for (let i = 0; i < 50 && !falso.respostas.some((r) => r.id === 9); i++) await new Promise((ok) => setTimeout(ok, 10));
+    const pedido = coords.flatMap((c) => c.handled).find((h) => h.text === 'aprovo a oferta 1');
+    assert.ok(pedido, 'o pedido falado não chegou ao coordenador');
+    assert.equal(pedido.opts?.origem, 'tela');
+    assert.match(pedido.opts?.painelUrl ?? '', /\/painel$/);
+    assert.equal(falso.respostas.find((r) => r.id === 9)?.result.success, true);
+  });
+
+  test('rotas da voz sem Origin são recusadas', async () => {
+    const r = await http(servidor.port, 'POST', '/api/voz/eventos', JSON.stringify({ token }), { 'Content-Type': 'application/json' });
+    assert.equal(r.status, 403);
+  });
+
+  test('e) /api/voz/parar encerra a sessão', async () => {
+    const r = await post('/api/voz/parar', { token, sessionId });
+    assert.equal(r.status, 200);
+    assert.deepEqual(JSON.parse(r.body), { ok: true });
+    const ev = await post('/api/voz/eventos', { token });
+    const corpo = JSON.parse(ev.body) as { ativa: boolean; eventos: { tipo: string }[] };
+    assert.equal(corpo.ativa, false);
+    assert.ok(corpo.eventos.some((e) => e.tipo === 'fim'));
+  });
+});

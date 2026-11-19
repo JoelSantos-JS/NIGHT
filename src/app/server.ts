@@ -17,6 +17,7 @@ import type { RadarOffer } from '../radar/store.ts';
 import type { TaskUpdate } from '../agents/scheduler.ts';
 import type { Decisao, HandleOptions, Reply } from './coordinator.ts';
 import { ICONE_NIGHT, paginaPainel } from './painel-ui.ts';
+import { VozAoVivo, type RespostaNight, type RpcCliente } from './voz-ao-vivo.ts';
 
 /** Uma tela por agente no OpenBot; cada uma tem a sua conversa no NIGHT. */
 export const TELAS = ['night', 'radar', 'produto', 'campanha', 'codigo', 'video'] as const;
@@ -84,6 +85,8 @@ export interface ServerOptions {
   port?: number;
   /** Teste: espera menor antes de virar novidade. */
   esperaRespostaMs?: number;
+  /** Teste: Codex falso para a voz ao vivo. */
+  criarClienteVoz?: () => RpcCliente;
 }
 
 export interface NightServer {
@@ -370,6 +373,40 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
     return r.detail ? `${r.text} (${r.detail})` : r.text;
   }
 
+  // ---------- Voz ao vivo ----------
+
+  /**
+   * Pedido falado: passou por modelos da OpenAI, então entra como tela (decisão volta com o link do painel).
+   * A voz recebe só `text`; o `detail` (diff, relatório) fica no painel e não vai para a OpenAI.
+   */
+  async function pedirPorVoz(texto: string): Promise<RespostaNight> {
+    falar('night', { quem: 'voce', texto: `🎙 ${texto}` });
+    const r = await coord('voz').handle(texto, undefined, { origem: 'tela', painelUrl: painelUrl() });
+    falar('night', { quem: 'night', texto: textoDe(r) });
+    const paraVoz = (x: Reply) => (x.detail ? `${x.text} O detalhe está no painel.` : x.text);
+    const depois = r.followUp?.then((tarde) => { falar('night', { quem: 'night', texto: textoDe(tarde) }); return paraVoz(tarde); });
+    return { texto: paraVoz(r), depois };
+  }
+  const voz = new VozAoVivo({ pedir: pedirPorVoz, criarCliente: opts.criarClienteVoz, voz: process.env.NIGHT_VOZ_LIVE_VOICE });
+
+  async function rotaVoz(rota: string, dados: Record<string, unknown>): Promise<{ status: number; corpo: object }> {
+    if (rota === '/api/voz/iniciar') {
+      const sdp = typeof dados.sdp === 'string' ? dados.sdp : '';
+      if (!sdp.startsWith('v=0') || sdp.length > 20_000) return { status: 400, corpo: { texto: 'oferta de áudio inválida' } };
+      try {
+        return { status: 200, corpo: await voz.iniciar(sdp) };
+      } catch (err) {
+        return { status: 502, corpo: { texto: (err as Error).message } };
+      }
+    }
+    if (rota === '/api/voz/parar') {
+      await voz.parar(typeof dados.sessionId === 'string' ? dados.sessionId : '');
+      return { status: 200, corpo: { ok: true } };
+    }
+    const desde = typeof dados.desde === 'number' ? dados.desde : 0;
+    return { status: 200, corpo: { ativa: voz.ativa, eventos: voz.eventosDesde(desde) } };
+  }
+
   // ---------- HTTP ----------
 
   async function atender(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -406,7 +443,8 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
     if (url.pathname === '/painel' && req.method === 'GET') return enviar(res, 200, 'text/html; charset=utf-8', paginaPainel(token));
     if (url.pathname === '/icone.svg' && req.method === 'GET') return enviar(res, 200, 'image/svg+xml', ICONE_NIGHT);
     if (url.pathname === '/api/estado' && req.method === 'GET') return enviar(res, 200, 'application/json', JSON.stringify(await estadoPainel()));
-    if ((url.pathname === '/api/pedir' || url.pathname === '/api/decidir') && req.method === 'POST') {
+    const rotasComToken = ['/api/pedir', '/api/decidir', '/api/voz/iniciar', '/api/voz/parar', '/api/voz/eventos'];
+    if (rotasComToken.includes(url.pathname) && req.method === 'POST') {
       // Só do próprio painel (Origin) e com o token deste início do servidor.
       if (origin === undefined) return enviarJson(res, 403, { texto: 'origem ausente' });
       let dados: Record<string, unknown>;
@@ -418,6 +456,10 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
       }
       if (!tokenConfere(typeof dados.token === 'string' ? dados.token : null, token)) {
         return enviarJson(res, 403, { texto: 'token inválido; recarregue o painel' });
+      }
+      if (url.pathname.startsWith('/api/voz/')) {
+        const r = await rotaVoz(url.pathname, dados);
+        return enviarJson(res, r.status, r.corpo);
       }
       if (url.pathname === '/api/pedir') {
         const tela = dados.tela;
@@ -449,10 +491,14 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
     port,
     mcpUrl: `http://127.0.0.1:${port}/mcp`,
     painelUrl: painelUrl(),
-    close: () => new Promise<void>((resolve) => {
-      server.close(() => resolve());
-      server.closeAllConnections();
-    }),
+    close: async () => {
+      // Espera a voz fechar: no Windows o codex.exe não morre junto com o NIGHT.
+      await voz.pararTudo();
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      });
+    },
   };
 }
 

@@ -36,8 +36,10 @@ class VozDono:
         return np.array(self.ext.compute(s), dtype=np.float32)
 
 
-MIN_SEMELHANCA = float(os.environ.get("NIGHT_SPEAKER_MIN", "0.70"))
-"""Medido 18/11 (bench_dono.py): Joel 0,80–0,93; outras vozes (Kokoro PT e EN, som de Bluetooth) até 0,66."""
+MIN_SEMELHANCA = float(os.environ.get("NIGHT_SPEAKER_MIN", "0.68"))
+"""Medido 19/11 com o perfil calibragem + 8 falas ao vivo (metade cada): Joel ao vivo 0,72–0,93 (cada fala fora da
+média); outras vozes (Kokoro PT e EN, som de Bluetooth) até 0,69, as em português até 0,61. Em 0,68: 8/8 do Joel,
+1/18 de outras (uma voz masculina em inglês). Só com a calibragem, o Joel ao vivo caía para 0,66."""
 
 
 class PerfilDono:

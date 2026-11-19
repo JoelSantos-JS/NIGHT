@@ -170,6 +170,11 @@ falas da calibragem. Medido (`bench_dono.py`): Joel 0,80–0,93 de semelhança; 
 a do Night, com som de Bluetooth) até 0,66. Limite 0,70 (`NIGHT_SPEAKER_MIN`): 13/13 do Joel aceitas, 0/18 de outras.
 O teste vem antes do Groq: som do PC nem gasta cota. Trocar de microfone pede recalibrar (o perfil é do fone BW06).
 `NIGHT_SPEAKER=off` desliga.
+**Ajuste de 19/11:** ao vivo o Joel deu só 0,66–0,91 contra o perfil da calibragem e foi recusado. O perfil passou a
+ser metade calibragem, metade 8 falas ao vivo que eram claramente comandos dele; as falas de dono incerto ficaram de
+fora. Com cada fala fora da média: Joel ao vivo 0,72–0,93; outras vozes até 0,69 (em português até 0,61). Limite
+agora 0,68: 8/8 do Joel, 1/18 de outras (voz masculina em inglês). Margem curta: um vídeo em inglês com voz grave
+pode passar. O perfil antigo ficou em `D:/NIGHT-data/voz-dono-calibragem-18-11.npy`.
 
 ## D-017 — Pesquisa no PC separada da pesquisa na internet; "os dois" obedece (18/11/2026)
 Pedido do Joel: o NIGHT dizia "não consigo vasculhar o código daqui". Agora há três escopos (`researchScope` no
@@ -180,3 +185,25 @@ citado ou do NIGHT, com Read/Grep/Glob, sem internet e sem Bash; pastas de chave
 "Os dois" roda as duas sessões separadas ao mesmo tempo e um modelo da conversa, sem ferramentas, junta as
 respostas: nenhuma sessão lê arquivo E abre página, então uma página maliciosa não consegue levar uma chave para fora.
 Teste real (18/11): pedido para ler `~/.groq/api_key` foi recusado e a resposta listou os agentes de `src/agents`.
+
+## D-018 — Voz ao vivo da OpenAI pelo login do ChatGPT, com o NIGHT no comando (19/11/2026)
+Pedido do Joel: falar com os agentes por voz ao vivo, como no OpenBot. O painel tem o botão **Voz ao vivo**: o
+navegador abre o microfone e manda a oferta WebRTC; `src/app/voz-ao-vivo.ts` abre um `codex app-server` (o Codex
+oficial que o OpenBot baixou, >= 0.156; ou `NIGHT_CODEX_LIVE_BIN`) com o login do ChatGPT e devolve a resposta. O
+áudio vai direto do navegador para a OpenAI. A voz entrega cada pedido a uma ponte do Codex (modelo padrão, esforço
+baixo) cuja única ferramenta é `pedir_ao_night`; o NIGHT responde e a voz fala. Código nosso: o OpenBot (PolyForm
+Noncommercial) serviu só de estudo do fluxo; o Codex é Apache-2.0.
+Segurança: a ponte não tem shell, arquivos, internet nem os MCP do Joel; roda numa pasta temporária vazia, só
+leitura, sem aprovações; qualquer outro pedido do Codex é recusado. O texto passou por modelos da OpenAI, então entra
+com origem `'tela'`: aprovar, cancelar e campanha com R$ devolvem o link do painel. Tudo que vai para a OpenAI passa
+por `redactKeyLike`. As rotas `/api/voz/*` exigem o token do painel e a Origin própria.
+Medido 19/11: com a cota semanal do Codex em 100%, um turno de texto ainda passa, mas a OpenAI recusa a voz ao vivo
+("You've hit your usage limit... try again at Nov 20th, 2026 1:57 PM"). O NIGHT mostra esse aviso em português.
+Prova sem navegador: `npx tsx scripts/voz-ao-vivo-prova.ts`. Pesquisa de base em
+[docs/agents/voz-ao-vivo-referencias.md](agents/voz-ao-vivo-referencias.md).
+Revisão (DeepSeek, no lugar do Codex sem cota) e correções no mesmo dia: sem ler o config do Codex a voz não abre
+(senão os MCP do Joel ficariam ligados); a voz recebe só o `text` da resposta, nunca o `detail` (diff, relatório),
+e o que vai para a ponte é cortado em 3,5 KB; mesmo pedido em 10 s ou mais de 8 por minuto são recusados; sem o
+painel perguntar pelos eventos por 30 s, a voz desliga; fechar o NIGHT espera o Codex fechar. Limite que fica: o
+filtro de voz do dono (D-016) não vale aqui, porque o áudio não passa pelo NIGHT. Contra TV ou outra pessoa falando,
+valem o botão Mudo, o limite de pedidos e as decisões só no painel.

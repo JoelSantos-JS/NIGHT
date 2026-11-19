@@ -27,6 +27,7 @@ const ICONES: Record<string, string> = {
   decisoes: '<path d="M5 12l4 4 10-10"/>',
   conexoes: '<path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/>',
   enviar: '<path d="M5 12h14"/><path d="M13 6l6 6-6 6"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/><path d="M9 21h6"/>',
 };
 
 const svg = (nome: string) =>
@@ -51,7 +52,14 @@ export function paginaPainel(token: string): string {
     <div id="agentes"></div>
   </aside>
   <main class="principal">
-    <header class="cabeca"><span class="cabeca-avatar" id="cabeca-avatar"></span><h1 id="titulo">NIGHT</h1><span class="chip" id="chip" hidden></span></header>
+    <header class="cabeca"><span class="cabeca-avatar" id="cabeca-avatar"></span><h1 id="titulo">NIGHT</h1><span class="chip" id="chip" hidden></span>
+      <div class="voz-grupo">
+        <button class="btn voz-btn" id="voz-btn" type="button" aria-pressed="false">${svg('mic')}<span>Voz ao vivo</span></button>
+        <button class="btn voz-mudo" id="voz-mudo" type="button" hidden>Mudo</button>
+        <span class="voz-estado" id="voz-estado" hidden></span>
+      </div>
+    </header>
+    <div class="voz-legenda" id="voz-legenda" hidden></div>
     <section class="cartao" id="vista"></section>
   </main>
 </div>
@@ -116,6 +124,17 @@ button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
 .btn:active{transform:scale(.97)}.btn:disabled{opacity:.5;cursor:default}
 .btn-primario{background:#f1f3f8;color:#11131a}.btn-icone{width:34px;padding:0}.btn-icone svg{width:18px;height:18px}
 .btn-ok{background:var(--ok);color:#06150d}.btn-perigo{background:transparent;border:1px solid #5a2a2a;color:var(--perigo)}
+.voz-grupo{margin-left:auto;display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.voz-btn svg{width:17px;height:17px}
+.voz-btn.btn-perigo{background:var(--perigo);border-color:var(--perigo);color:#1a0707}
+.voz-mudo{background:var(--superficie2);color:var(--txt)}
+.voz-mudo.mudo{color:var(--alerta)}
+.voz-estado{font-size:12.5px;color:var(--sub);white-space:nowrap}
+.voz-estado.erro{color:var(--perigo);white-space:normal}
+.voz-mudo[hidden],.voz-estado[hidden],.voz-legenda[hidden]{display:none!important}
+.voz-legenda{margin:0 6px 8px;padding:8px 12px;border:1px solid var(--borda);border-radius:var(--raio-p);background:var(--superficie);color:var(--sub);font-size:13px;display:flex;flex-direction:column;gap:2px}
+.voz-linha{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.voz-quem{color:var(--txt);font-weight:600}
 .decisao{display:grid;gap:8px}.decisao h3{margin:0;font-size:15px}.decisao p{margin:0;color:var(--sub)}
 .acoes{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .campo{display:flex;align-items:center;gap:8px;color:var(--sub)}
@@ -135,6 +154,10 @@ button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
   #agentes{flex-direction:row;gap:6px}
   .agente{width:auto;flex:none;padding:6px 10px}.agente-estado{display:none}
   .principal{padding:0 16px 16px}
+  .cabeca{height:auto;min-height:52px;flex-wrap:wrap;padding:8px 6px}
+  .voz-grupo{gap:6px}
+  .voz-estado{font-size:12px}
+  .voz-legenda{margin:0 6px 8px}
 }
 `;
 
@@ -165,6 +188,210 @@ async function postar(caminho, dados) {
   if (r.status === 403) return { texto: 'O painel foi reaberto pelo NIGHT. Recarregue a página (F5).' };
   return corpo;
 }
+
+// ---------- Voz ao vivo (WebRTC direto com a OpenAI; o servidor só troca o SDP) ----------
+
+let vozPc = null;
+let vozMic = null;
+let vozAudio = null; // elemento <audio> criado uma vez e reaproveitado
+let vozSessao = null;
+let vozDesde = 0; // maior n de evento já visto
+let vozTimer = null;
+let vozLigada = false;
+let vozConectando = false;
+let vozMudo = false;
+let vozConsultando = false;
+let vozGeracao = 0; // invalida ligações antigas depois de desligar
+let vozLegendas = []; // até 2 transcrições
+
+function vozMostrarEstado(texto, erro) {
+  const s = $('#voz-estado');
+  if (!texto) { s.hidden = true; s.textContent = ''; s.classList.remove('erro'); return; }
+  s.hidden = false; s.textContent = texto; s.classList.toggle('erro', !!erro);
+}
+
+function vozMostrarBotao(ligado, conectando) {
+  const b = $('#voz-btn');
+  b.classList.toggle('btn-perigo', ligado);
+  b.querySelector('span').textContent = conectando ? 'Conectando…' : (ligado ? 'Desligar' : 'Voz ao vivo');
+  b.disabled = !!conectando;
+  b.setAttribute('aria-pressed', ligado ? 'true' : 'false');
+}
+
+function vozDesenharLegenda() {
+  const l = $('#voz-legenda');
+  l.replaceChildren();
+  if (!vozLigada || vozLegendas.length === 0) { l.hidden = true; return; }
+  for (const t of vozLegendas) {
+    const d = el('div', 'voz-linha');
+    d.append(el('strong', 'voz-quem', t.papel === 'voce' ? 'Você:' : 'NIGHT:'), document.createTextNode(' ' + t.texto));
+    l.append(d);
+  }
+  l.hidden = false;
+}
+
+// Para tudo que é local, sem falar com o servidor (quem chama decide se avisa o /api/voz/parar).
+function vozPararLocal() {
+  vozGeracao++;
+  if (vozTimer) { clearInterval(vozTimer); vozTimer = null; }
+  if (vozMic) { for (const t of vozMic.getTracks()) t.stop(); vozMic = null; }
+  if (vozPc) { try { vozPc.close(); } catch (e) { /* já fechado */ } vozPc = null; }
+  if (vozAudio) { try { vozAudio.pause(); } catch (e) { /* sem áudio */ } vozAudio.srcObject = null; }
+  vozSessao = null; vozLigada = false; vozConectando = false; vozMudo = false;
+  vozDesde = 0; vozLegendas = [];
+  const m = $('#voz-mudo'); m.hidden = true; m.textContent = 'Mudo'; m.classList.remove('mudo');
+  vozMostrarBotao(false, false);
+  vozDesenharLegenda();
+}
+
+async function desligar(erro) {
+  const sessao = vozSessao;
+  const estava = vozLigada || vozConectando;
+  vozPararLocal();
+  if (erro) vozMostrarEstado('Erro: ' + erro, true);
+  else vozMostrarEstado(null);
+  if (estava && sessao) { try { await postar('/api/voz/parar', { sessionId: sessao }); } catch (e) { /* servidor fora do ar */ } }
+}
+
+function esperarIce(pc, ms) {
+  return new Promise((ok) => {
+    if (pc.iceGatheringState === 'complete') return ok();
+    let timer = null;
+    let fim = false;
+    const terminar = () => {
+      if (fim) return;
+      fim = true;
+      if (timer) clearTimeout(timer);
+      pc.removeEventListener('icegatheringstatechange', conferir);
+      ok();
+    };
+    const conferir = () => { if (pc.iceGatheringState === 'complete') terminar(); };
+    timer = setTimeout(terminar, ms);
+    pc.addEventListener('icegatheringstatechange', conferir);
+  });
+}
+
+async function ligar() {
+  if (vozLigada || vozConectando) return;
+  const g = ++vozGeracao;
+  vozConectando = true;
+  vozMostrarBotao(false, true);
+  vozMostrarEstado('Conectando…');
+  try {
+    let mic;
+    try {
+      mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) {
+      if (g !== vozGeracao) return;
+      throw new Error('o navegador não deu acesso ao microfone');
+    }
+    if (g !== vozGeracao) { for (const t of mic.getTracks()) t.stop(); return; }
+    vozMic = mic;
+
+    const pc = new RTCPeerConnection();
+    vozPc = pc;
+    for (const t of mic.getTracks()) pc.addTrack(t, mic);
+    pc.createDataChannel('oai-events');
+    pc.ontrack = (e) => {
+      if (!vozAudio) {
+        vozAudio = document.createElement('audio');
+        vozAudio.autoplay = true;
+        vozAudio.setAttribute('playsinline', '');
+        vozAudio.style.display = 'none';
+        document.body.append(vozAudio);
+      }
+      vozAudio.srcObject = e.streams[0];
+      const p = vozAudio.play();
+      if (p && p.catch) p.catch(() => vozMostrarEstado('Erro: o navegador bloqueou o som. Clique na página e tente de novo.', true));
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc !== vozPc) return;
+      if (pc.connectionState === 'failed') desligar('a conexão de áudio caiu');
+    };
+
+    const oferta = await pc.createOffer();
+    if (g !== vozGeracao) return;
+    await pc.setLocalDescription(oferta);
+    await esperarIce(pc, 2000);
+    if (g !== vozGeracao) return;
+
+    const r = await postar('/api/voz/iniciar', { sdp: pc.localDescription.sdp });
+    if (g !== vozGeracao) {
+      if (r && r.sessionId) postar('/api/voz/parar', { sessionId: r.sessionId }).catch(() => {});
+      return;
+    }
+    // Guarda a sessão já: se algo falhar daqui em diante, o desligar avisa o servidor e o Codex não fica aberto.
+    if (r && r.sessionId) vozSessao = r.sessionId;
+    if (!r || !r.sdp || !r.sessionId) throw new Error((r && r.texto) ? r.texto : 'o NIGHT não abriu a voz');
+
+    await pc.setRemoteDescription({ type: 'answer', sdp: r.sdp });
+    if (g !== vozGeracao) { postar('/api/voz/parar', { sessionId: r.sessionId }).catch(() => {}); return; }
+
+    vozSessao = r.sessionId;
+    vozLigada = true;
+    vozConectando = false;
+    vozMostrarBotao(true, false);
+    const m = $('#voz-mudo'); m.hidden = false; m.textContent = 'Mudo';
+    vozMostrarEstado('Ouvindo');
+    vozTimer = setInterval(consultarEventos, 1000);
+    consultarEventos();
+  } catch (e) {
+    if (g !== vozGeracao) return;
+    await desligar(e && e.message ? e.message : String(e));
+  }
+}
+
+async function consultarEventos() {
+  if (!vozLigada || vozConsultando) return;
+  vozConsultando = true;
+  const g = vozGeracao;
+  try {
+    // Servidor travado não pode prender a consulta: 8 s e tenta no próximo ciclo.
+    const r = await Promise.race([postar('/api/voz/eventos', { desde: vozDesde }), new Promise((_, falha) => setTimeout(() => falha(new Error('demorou')), 8000))]);
+    if (g !== vozGeracao || !vozLigada) return;
+    const eventos = (r && Array.isArray(r.eventos)) ? r.eventos : [];
+    for (const ev of eventos) {
+      if (typeof ev.n === 'number' && ev.n > vozDesde) vozDesde = ev.n;
+      if (ev.tipo === 'transcricao') {
+        vozLegendas.push({ papel: ev.papel, texto: String(ev.texto || '') });
+        if (vozLegendas.length > 2) vozLegendas.shift();
+        vozDesenharLegenda();
+      } else if (ev.tipo === 'pedido' || ev.tipo === 'resposta') {
+        carregar(); // a conversa do NIGHT no painel recebe o pedido e a resposta pelo servidor
+      } else if (ev.tipo === 'fim') {
+        desligar(ev.erro || null);
+        return;
+      }
+    }
+    if (r && r.ativa === false && eventos.length === 0) desligar(null); // a sessão sumiu (servidor reiniciou?)
+  } catch (e) {
+    // servidor reiniciando: tenta de novo no próximo ciclo
+  } finally {
+    vozConsultando = false;
+  }
+}
+
+$('#voz-btn').onclick = () => { if (vozLigada) desligar(null); else ligar(); };
+$('#voz-mudo').onclick = () => {
+  if (!vozMic) return;
+  vozMudo = !vozMudo;
+  for (const t of vozMic.getAudioTracks()) t.enabled = !vozMudo;
+  const m = $('#voz-mudo'); m.textContent = vozMudo ? 'Som' : 'Mudo'; m.classList.toggle('mudo', vozMudo);
+  vozMostrarEstado(vozMudo ? 'Mudo' : 'Ouvindo');
+};
+
+// Fechou a página: avisa o servidor com keepalive (sendBeacon não manda JSON+token do jeito que a rota exige).
+window.addEventListener('pagehide', () => {
+  if (!vozSessao) return;
+  try {
+    fetch('/api/voz/parar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: vozSessao, token: TOKEN }),
+      keepalive: true
+    });
+  } catch (e) { /* a página já está indo embora */ }
+});
 
 function desenhar() {
   if (!estado) return;
