@@ -637,6 +637,49 @@ describe('reservas DeepSeek (D11)', () => {
     assert.equal(later.model, 'none');
     assert.match(later.text, /^Não consegui pesquisar agora/);
   });
+
+  test('pesquisa no PC (D-017): só o pesquisador de arquivos, na pasta do NIGHT, sem a internet', async () => {
+    const web = new FakeResearcher('codex:gpt-6-luna', 'da internet');
+    const pc = new FakeResearcher('claude:sonnet:pc', 'Os agentes estão em src/agents. Chave gsk_abcdefghijklmnopqrstu achada.');
+    const n = new NightCoordinator(mem, router(), llm, { researchers: [web], pcResearchers: [pc], nightRoot: 'D:/NIGHT' });
+    const later = await (await n.handle('dá uma vasculhada no seu próprio código e veja quais agentes estão disponíveis')).followUp!;
+    assert.equal(later.model, 'claude:sonnet:pc');
+    assert.equal(later.text, 'Os agentes estão em src/agents. Chave [chave apagada] achada.');
+    assert.deepEqual(pc.roots, ['D:/NIGHT']);
+    assert.equal(web.questions.length, 0, 'a pesquisa na internet não roda');
+  });
+
+  test('pesquisa no PC usa a pasta do projeto citado', async () => {
+    await mem.upsertProject({ id: 'soaken', name: 'Soaken', description: '', repoPath: 'C:/repos/soaken', defaultBranch: 'main', allowedPaths: [], status: 'active' });
+    const pc = new FakeResearcher('claude:sonnet:pc', 'O login fica em src/auth.ts.');
+    const n = new NightCoordinator(mem, router(), llm, { pcResearchers: [pc], nightRoot: 'D:/NIGHT' });
+    await (await n.handle('verifica nos arquivos do Soaken onde fica o login')).followUp!;
+    assert.deepEqual(pc.roots, ['C:/repos/soaken']);
+  });
+
+  test('"os dois": internet e PC separados, juntados por um modelo sem ferramentas', async () => {
+    const web = new FakeResearcher('codex:gpt-6-luna', 'O OpenBot liga o WhatsApp por QR code.');
+    const pc = new FakeResearcher('claude:sonnet:pc', 'O NIGHT não tem WhatsApp ainda.');
+    const seen: string[] = [];
+    const n = new NightCoordinator(mem, router(), llm, {
+      researchers: [web], pcResearchers: [pc], nightRoot: 'D:/NIGHT', chatters: [{ id: 'claude:sonnet', async reply(_h: unknown, text: string) { seen.push(text); return 'Resposta juntada.'; } }],
+    });
+    const later = await (await n.handle('procura no nosso código e na internet como configurar o WhatsApp')).followUp!;
+    assert.equal(later.text, 'Resposta juntada.');
+    assert.equal(later.model, 'codex:gpt-6-luna + claude:sonnet:pc + claude:sonnet');
+    assert.equal(web.roots[0], undefined, 'a pesquisa na internet não recebe pasta');
+    assert.deepEqual(pc.roots, ['D:/NIGHT']);
+    assert.match(seen[0]!, /Dos arquivos do PC: O NIGHT não tem WhatsApp ainda\.\nDa internet: O OpenBot liga o WhatsApp por QR code\./);
+  });
+
+  test('"os dois" com uma falha ainda responde com a outra, sem modelo junta como veio', async () => {
+    const n = new NightCoordinator(mem, router(), llm, {
+      researchers: [new FakeResearcher('codex:gpt-6-luna', new QuotaError('limite'))],
+      pcResearchers: [new FakeResearcher('claude:sonnet:pc', 'Está em src/app/server.ts.')],
+    });
+    const later = await (await n.handle('pesquisa os dois: no seu código e na internet onde fica o painel')).followUp!;
+    assert.equal(later.text, 'Nos arquivos: Está em src/app/server.ts. Na internet: a pesquisa na internet falhou');
+  });
 });
 
 describe('conversa com a oferta do Radar (R06)', () => {

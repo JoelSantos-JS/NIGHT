@@ -1,5 +1,6 @@
 // Monta o Night: memória, modelo local, roteador, pesquisadores, executor de tarefas e coordenador.
 // Usado pelo modo texto, pelo modo voz e pelo teste de voz.
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { DeepSeekAdvisor } from '../advisor/deepseek-client.ts';
 import { PgAdvisorJournal } from '../advisor/journal.ts';
@@ -9,7 +10,7 @@ import {
 } from '../agents/coding.ts';
 import { ClaudeChat, CodexChat } from '../agents/chat.ts';
 import { DeepSeekApi, DeepSeekChat, DeepSeekResearch, DeepSeekReviewer } from '../agents/deepseek.ts';
-import { ClaudeResearch, CodexResearch } from '../agents/research.ts';
+import { ClaudeLocalResearch, ClaudeResearch, CodexLocalResearch, CodexResearch } from '../agents/research.ts';
 import { TaskScheduler } from '../agents/scheduler.ts';
 import { ArtifactStore } from '../artifacts/store.ts';
 import type { CodingAgent, Memory } from '../core/interfaces.ts';
@@ -107,6 +108,9 @@ function runInBackground(memory: Memory, runner: JobRunner, job: Job): void {
   });
 }
 
+/** Uma linha do quadro de conexões do painel. */
+export interface Connection { nome: string; ok: boolean; detalhe: string }
+
 export interface CreateNightOptions {
   /** Voz do Kokoro para narrar vídeos; sem ela (modo texto), a narração espera 'voz'. */
   synth?: Synth;
@@ -119,6 +123,8 @@ export async function createNight(opts: CreateNightOptions = {}) {
   const router = new NightRouter(llm, async () => (await memory.listProjects()).map((p) => p.name));
   // Pesquisa: modelos menores, Codex primeiro (escolha do Joel), Claude se o Codex falhar ou estiver no limite.
   const researchers = [new CodexResearch(), new ClaudeResearch()];
+  // Pesquisa no PC (D-017): lê arquivos sem internet. Claude primeiro (o Codex está com a cota semanal no fim).
+  const pcResearchers = [new ClaudeLocalResearch(), new CodexLocalResearch()];
   // Dados fora do repositório: artefatos dos trabalhos, arquivos temporários de vídeo e imagens do Flow.
   const paths = nightPaths();
   const artifacts = new ArtifactStore(paths.artifacts);
@@ -226,6 +232,7 @@ export async function createNight(opts: CreateNightOptions = {}) {
     chatters,
     reserves,
     researchReserves,
+    pcResearchers,
     radar: radarStore,
     jobRunners,
     links: offerLinks,
@@ -256,5 +263,15 @@ export async function createNight(opts: CreateNightOptions = {}) {
     await close();
     await fecharMemoria();
   };
-  return { memory, llm, llmOk, tasks, stuck, runsTasks: Boolean(unlock), night, makeCoordinator, radar: radarStore, close };
+  // Situação de cada conexão para o painel: só "ligado / falta o quê", nunca o segredo.
+  const connections = async (): Promise<Connection[]> => [
+    { nome: 'Banco (PostgreSQL)', ok: true, detalhe: 'conectado' },
+    { nome: 'Modelo local (Ollama)', ok: await llm.available(), detalhe: llm.model },
+    { nome: 'DeepSeek (parecer e reserva)', ok: hasDeepSeek, detalhe: hasDeepSeek ? 'chave encontrada' : 'sem chave: defina DEEPSEEK_API_KEY ou ~/.deepseek/api_key' },
+    { nome: 'Meta: leitura da Biblioteca (Radar)', ok: metaReadTools.length > 0, detalhe: metaReadTools.length ? metaReadTools.join(', ') : 'falta ligar o conector e definir NIGHT_META_READ_TOOLS (M01)' },
+    { nome: 'Meta: conta de anúncios (campanha)', ok: metaAdAccount !== null, detalhe: metaAdAccount ?? 'falta NIGHT_META_AD_ACCOUNT' },
+    { nome: 'OpenBot (telas)', ok: existsSync(join(process.env.LOCALAPPDATA ?? '', 'Programs', 'OpenBot', 'OpenBot.exe')), detalhe: 'telas pelo servidor MCP; pacote com pnpm night:telas' },
+    { nome: 'Executa trabalhos nesta janela', ok: Boolean(unlock), detalhe: unlock ? 'sim' : 'outra janela do NIGHT tem a trava' },
+  ];
+  return { memory, llm, llmOk, tasks, stuck, runsTasks: Boolean(unlock), night, makeCoordinator, radar: radarStore, connections, close };
 }

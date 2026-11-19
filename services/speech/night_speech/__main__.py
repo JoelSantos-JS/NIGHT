@@ -48,6 +48,10 @@ WHISPER_MODEL = os.environ.get("NIGHT_WHISPER_MODEL", "small")
 WHISPER_PROMPT_PT = os.environ.get("NIGHT_STT_PROMPT_PT", "Oi Night, pesquisa pra mim uma coisa e depois fala com o Claude e o Codex.")
 WHISPER_PROMPT_EN = os.environ.get("NIGHT_STT_PROMPT_EN", "Hey Night, search something for me and then talk to Claude and Codex.")
 WHISPER_FALLBACK = "base"
+# Motor da transcrição. "groq" (padrão quando há chave): Whisper large-v3 na nuvem do Groq, medido 18/11 com a voz do
+# Joel no fone Bluetooth: 16% de palavras erradas × 29% do small local, em 0,5 s por fala (D-016). O áudio da fala
+# sai do PC. "local": só o Whisper do PC. Com Groq, o local continua carregado como reserva (sem internet, limite).
+STT_ENGINE = os.environ.get("NIGHT_STT", "auto")
 # Confiança mínima do Whisper. Fala lida e clara fica entre -0,1 e -0,5; fala longa e espontânea do Joel cai mais
 # (04/11: uma fala de 16 s transcrita certinha foi descartada com o limite único de -0,8). Frase curta é onde ele
 # inventa ("So watch the events"), então lá o limite é rígido; fala longa ganha folga.
@@ -130,6 +134,25 @@ class Listener:
             log(f"whisper {WHISPER_MODEL} não coube ({e}); usando {WHISPER_FALLBACK}")
             self.model_name = WHISPER_FALLBACK
             self.model = WhisperModel(WHISPER_FALLBACK, device="cpu", compute_type="int8", cpu_threads=THREADS)
+        self.groq = None
+        if STT_ENGINE in ("auto", "groq"):
+            from night_speech.groq import GroqStt, groq_key
+
+            if groq_key():
+                self.groq = GroqStt()
+            elif STT_ENGINE == "groq":
+                log("NIGHT_STT=groq, mas não há chave (GROQ_API_KEY ou ~/.groq/api_key); usando o Whisper local")
+        self.engine = f"groq:{self.groq.model} (reserva {self.model_name})" if self.groq else self.model_name
+        # Só a voz do Joel: vídeo tocando, outra pessoa e a voz do próprio Night ficam de fora (D-016).
+        from night_speech.dono import PerfilDono
+
+        try:
+            self.dono = PerfilDono.carregar()
+        except Exception as e:  # noqa: BLE001
+            log(f"filtro de voz do dono desligado: {e}")
+            self.dono = None
+        if self.dono:
+            self.engine += f" · só a voz do dono (mín {self.dono.minimo:.2f})"
         self.stream: sd.InputStream | None = None
         self.chunks: list[np.ndarray] = []
         self.opened_at = 0.0
@@ -168,11 +191,59 @@ class Listener:
         if audio_s < 0.3:
             return {"text": "", "language": lang_hint, "audio_s": round(audio_s, 2), "ms": 0}
         t = time.perf_counter()
+        # Ruído forte: limpa antes. Só quando o fundo está alto — com ruído leve a limpeza piora palavras
+        # (medido 04/11: "seu" virou "ser"). Custa ~0,2 s.
+        denoised = False
+        snr = snr_db(audio)
+        if snr < DENOISE_BELOW_DB:
+            import noisereduce as nr
+            audio = nr.reduce_noise(y=audio, sr=SAMPLE_RATE_IN, stationary=False).astype(np.float32)
+            denoised = True
+        if self.dono:
+            # Antes da transcrição: som que não é o Joel nem gasta a cota do Groq.
+            sim = self.dono.semelhanca(audio)
+            if sim < self.dono.minimo:
+                return {"text": "", "doubt": None, "other_voice": round(sim, 2), "snr_db": round(snr, 1),
+                        "denoised": denoised, "language": lang_hint, "audio_s": round(audio_s, 2),
+                        "ms": round((time.perf_counter() - t) * 1000)}
+        r = self._groq(audio, lang_hint) if self.groq else None
+        if r is None:
+            r = self._local(audio, audio_s, lang_hint)
+        text, avg_logprob, no_speech = r["text"], r["avg_logprob"], r["no_speech"]
+        min_logprob = MIN_AVG_LOGPROB if audio_s < 4.0 else MIN_AVG_LOGPROB_LONG
+        # "Não é fala" só conta junto com confiança baixa: em fala longa o no_speech de um trecho pode subir à toa.
+        unsure = avg_logprob < min_logprob or (no_speech > MAX_NO_SPEECH and avg_logprob < -0.5)
+        return {"text": "" if unsure else text, "doubt": text if unsure else None, "snr_db": round(snr, 1), "denoised": denoised,
+                "confidence": round(avg_logprob, 2), "no_speech": round(no_speech, 2), "engine": r["engine"],
+                "language": "en" if r["language"] == "en" else "pt-BR", "audio_s": round(audio_s, 2),
+                "ms": round((time.perf_counter() - t) * 1000)}
+
+    def _groq(self, audio: np.ndarray, lang_hint: str | None) -> dict | None:
+        """Uma chamada: o Groq acha o idioma (13/13 certos na calibragem, 18/11) com a frase de ajuda nos dois.
+        None = falhou (sem internet, limite do plano, chave recusada) e a fala vai para o Whisper local."""
+        language = {"pt-BR": "pt", "en": "en"}.get(lang_hint or "")
+        prompt = {"pt": WHISPER_PROMPT_PT, "en": WHISPER_PROMPT_EN}.get(language or "", f"{WHISPER_PROMPT_PT} {WHISPER_PROMPT_EN}")
+        try:
+            r = self.groq.transcribe(audio, language, prompt)
+            achado = (r["language"] or language or "").lower()
+            if not language and not achado.startswith(("english", "portug", "en", "pt")):
+                # Achou outro idioma (galego, espanhol...): só PT ou EN; na dúvida, português (o padrão do Joel).
+                language = "pt"
+                r = self.groq.transcribe(audio, "pt", WHISPER_PROMPT_PT)
+                achado = "pt"
+        except Exception as e:  # noqa: BLE001
+            log(f"groq falhou ({str(e)[:160]}); usando o Whisper local")
+            return None
+        text = r["text"]
+        return {"text": text, "engine": f"groq:{self.groq.model}",
+                "language": "en" if achado.startswith("en") else "pt",
+                "avg_logprob": r["avg_logprob"] if r["avg_logprob"] is not None else (0.0 if text else -9.0),
+                "no_speech": r["no_speech"] if r["no_speech"] is not None else (0.0 if text else 1.0)}
+
+    def _local(self, audio: np.ndarray, audio_s: float, lang_hint: str | None) -> dict:
         language = {"pt-BR": "pt", "en": "en"}.get(lang_hint or "")
         if not language:
             # Só PT ou EN: entre os dois, o mais provável. Evita o Whisper "achar" galego ou espanhol.
-            # Fala curta engana a detecção ("Bom dia, Night!" em 1,4 s saiu inglês, "Bon Gia night"):
-            # abaixo de 2,5 s, inglês só se for o dobro mais provável. Na dúvida, português (o padrão do Joel).
             # 04/11 no uso real: falas de 1 a 2 s saíram inglês inventado ("So watch the events", "Night was the
             # day"). Abaixo de 3 s, inglês só com certeza alta. Na dúvida, português (o padrão do Joel).
             _, _, probs = self.model.detect_language(audio)
@@ -185,14 +256,6 @@ class Listener:
         # O prompt puxa o Whisper para o vocabulário dos comandos. Sem "pesquisar" aqui, ele ouvia "precisar"
         # (04/11: "você consegue pesquisar para mim?" virou "precisar" e o pedido não foi reconhecido).
         prompt = (WHISPER_PROMPT_EN if language == "en" else WHISPER_PROMPT_PT)
-        # Ruído forte: limpa antes. Só quando o fundo está alto — com ruído leve a limpeza piora palavras
-        # (medido 04/11: "seu" virou "ser"). Custa ~0,2 s.
-        denoised = False
-        snr = snr_db(audio)
-        if snr < DENOISE_BELOW_DB:
-            import noisereduce as nr
-            audio = nr.reduce_noise(y=audio, sr=SAMPLE_RATE_IN, stationary=False).astype(np.float32)
-            denoised = True
         # Fala longa com beam 1: medido 04/11, 4,7 s × 7,3 s para 21 s de áudio, mesmo texto. Comando curto
         # fica com beam 5 (é onde uma palavra errada muda o pedido).
         segments, _ = self.model.transcribe(audio, language=language, vad_filter=True,
@@ -206,13 +269,8 @@ class Listener:
             no_speech = max(s.no_speech_prob for s in segs)
         else:
             avg_logprob, no_speech = -9.0, 1.0
-        min_logprob = MIN_AVG_LOGPROB if audio_s < 4.0 else MIN_AVG_LOGPROB_LONG
-        # "Não é fala" só conta junto com confiança baixa: em fala longa o no_speech de um trecho pode subir à toa.
-        unsure = avg_logprob < min_logprob or (no_speech > MAX_NO_SPEECH and avg_logprob < -0.5)
-        return {"text": "" if unsure else text, "doubt": text if unsure else None, "snr_db": round(snr, 1), "denoised": denoised,
-                "confidence": round(avg_logprob, 2), "no_speech": round(no_speech, 2),
-                "language": "en" if language == "en" else "pt-BR", "audio_s": round(audio_s, 2),
-                "ms": round((time.perf_counter() - t) * 1000)}
+        return {"text": text, "engine": self.model_name, "language": language,
+                "avg_logprob": avg_logprob, "no_speech": no_speech}
 
 
 DENOISE_BELOW_DB = float(os.environ.get("NIGHT_DENOISE_BELOW_DB", "12"))
@@ -268,7 +326,7 @@ def main() -> None:
     speaker = Speaker()
     listener = Listener()
     send({"type": "ready", "load_ms": round((time.perf_counter() - t) * 1000), "voices": VOICES,
-          "whisper": listener.model_name, "input": sd.query_devices(input_device() if input_device() is not None else sd.default.device[0])["name"],
+          "whisper": listener.engine, "input": sd.query_devices(input_device() if input_device() is not None else sd.default.device[0])["name"],
           "output": sd.query_devices(kind="output")["name"]})
 
     # Fala numa thread própria: "stop" e "listen_start" precisam funcionar enquanto ela fala.

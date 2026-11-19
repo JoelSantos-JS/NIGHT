@@ -63,6 +63,7 @@ describe('servidor das telas e painel', () => {
       getProject: async () => null,
     },
     ofertas: { listLatestOffers: async () => [offer(1, 'discutindo'), offer(2, 'aprovada')] },
+    conexoes: async () => [{ nome: 'Meta & teste', ok: false, detalhe: 'falta conta' }],
   };
 
   const mcp = async (msg: object) => {
@@ -146,42 +147,80 @@ describe('servidor das telas e painel', () => {
     const origin = await http(server.port, 'POST', '/mcp', JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }), { Origin: 'https://evil.example' });
     assert.equal(origin.status, 403);
     assert.equal((await http(server.port, 'GET', '/mcp')).status, 405);
+    assert.equal((await http(server.port, 'GET', '/mcp', undefined, { Accept: 'text/event-stream' })).status, 405);
+    const navegador = await http(server.port, 'GET', '/mcp', undefined, { Accept: 'text/html,application/xhtml+xml' });
+    assert.equal(navegador.status, 200);
+    assert.match(navegador.body, /href="\/painel"/);
     assert.equal((await http(server.port, 'POST', '/mcp', 'não é json')).status, 400);
   });
 
-  test('painel mostra pendências escapando o texto', async () => {
+  test('painel: página escura com ícone, sem dados embutidos', async () => {
     const r = await http(server.port, 'GET', '/painel');
     assert.equal(r.status, 200);
-    assert.match(r.body, /Ofertas para decidir/);
-    assert.match(r.body, /Oferta &lt;b&gt;1&lt;\/b&gt;/);
-    assert.doesNotMatch(r.body, /<b>1<\/b>/);
-    assert.match(r.body, /Montar campanha na Meta \(sempre PAUSADA\)/);
-    assert.match(r.body, /name="valor" type="number" min="1" max="200"/);
-    assert.doesNotMatch(r.body, /name="valor"[^>]*value=/, 'sem valor sugerido');
+    assert.match(r.body, /<title>NIGHT<\/title>/);
+    assert.match(r.body, /<meta name="color-scheme" content="dark">/);
+    assert.match(r.body, /<link rel="icon" href="\/icone\.svg"/);
+    assert.match(r.body, /const TOKEN = "[0-9a-f]{48}"/);
+    assert.doesNotMatch(r.body, /Oferta <b>1<\/b>/, 'dados só chegam pela API e entram por textContent');
+    const icone = await http(server.port, 'GET', '/icone.svg');
+    assert.equal(icone.status, 200);
+    assert.match(icone.body, /<rect width="64" height="64" rx="15" fill="#000"\/>/);
   });
 
-  test('painel: decidir exige Origin do painel e o token', async () => {
-    const page = (await http(server.port, 'GET', '/painel')).body;
-    const token = /name="token" value="([0-9a-f]+)"/.exec(page)![1]!;
+  test('api/estado: agentes, decisões e conexões', async () => {
+    jobs = [job({ kind: 'radar', number: 4, status: 'waiting', waitingFor: 'fonte' })];
+    const e = JSON.parse((await http(server.port, 'GET', '/api/estado')).body);
+    assert.deepEqual(e.agentes.map((a: { nome: string }) => a.nome), ['NIGHT', 'Radar', 'Produto', 'Campanha', 'Código', 'Vídeo']);
+    const radar = e.agentes.find((a: { tela: string }) => a.tela === 'radar');
+    assert.equal(radar.resumo, '1 esperando');
+    assert.deepEqual(radar.linhas, ['Radar 4: waiting (esperando: fonte)', '2 oferta(s), 1 aprovada(s)']);
+    assert.ok(radar.exemplos.length > 0);
+    const grupos = e.decisoes.map((d: { grupo: string }) => d.grupo);
+    assert.ok(grupos.includes('Oferta para decidir'));
+    assert.ok(grupos.includes('Trabalho em andamento'));
+    const campanha = e.decisoes.find((d: { grupo: string }) => d.grupo.startsWith('Montar campanha'));
+    assert.equal(campanha.pedeValor, true);
+    assert.deepEqual(campanha.acoes[0].campos, { tipo: 'campanha', numero: '2' });
+    assert.equal(e.decisoes.find((d: { grupo: string }) => d.grupo === 'Oferta para decidir').titulo, 'Oferta 1 (versão 1)');
+    assert.deepEqual(e.conexoes, [{ nome: 'Meta & teste', ok: false, detalhe: 'falta conta' }]);
+    jobs = [];
+  });
+
+  const postJson = (caminho: string, dados: object, headers: Record<string, string> = {}) =>
+    http(server.port, 'POST', caminho, JSON.stringify(dados), { 'Content-Type': 'application/json', ...headers });
+  const tokenDoPainel = async () => /const TOKEN = "([0-9a-f]+)"/.exec((await http(server.port, 'GET', '/painel')).body)![1]!;
+
+  test('api/pedir: conversa por agente, vale como o dono e exige token e origem', async () => {
+    const token = await tokenDoPainel();
     const origin = `http://127.0.0.1:${server.port}`;
-    const form = (o: Record<string, string>) => new URLSearchParams(o).toString();
-    const post = (body: string, headers: Record<string, string>) =>
-      http(server.port, 'POST', '/painel/decidir', body, { 'Content-Type': 'application/x-www-form-urlencoded', ...headers });
+    assert.equal((await postJson('/api/pedir', { tela: 'radar', texto: 'oi', token })).status, 403, 'sem Origin');
+    assert.equal((await postJson('/api/pedir', { tela: 'radar', texto: 'oi', token: 'x' }, { Origin: origin })).status, 403);
+    assert.equal((await postJson('/api/pedir', { tela: 'banco', texto: 'oi', token }, { Origin: origin })).status, 400);
+    const r = await postJson('/api/pedir', { tela: 'radar', texto: 'aprova a oferta 1', token }, { Origin: origin });
+    assert.equal(r.status, 200);
+    assert.equal(JSON.parse(r.body).texto, 'ok: aprova a oferta 1');
+    const c = coords.find((x) => x.handled.some((h) => h.text === 'aprova a oferta 1'))!;
+    assert.equal(c.handled.at(-1)!.opts?.origem, 'dono');
+    const e = JSON.parse((await http(server.port, 'GET', '/api/estado')).body);
+    assert.deepEqual(e.conversas.radar, [{ quem: 'voce', texto: 'aprova a oferta 1' }, { quem: 'night', texto: 'ok: aprova a oferta 1' }]);
+    assert.equal(e.conversas.produto, undefined, 'cada agente tem a sua conversa');
+  });
 
-    const semOrigin = await post(form({ tipo: 'oferta', numero: '1', decisao: 'approve', token }), {});
-    assert.equal(semOrigin.status, 403);
-    const semToken = await post(form({ tipo: 'oferta', numero: '1', decisao: 'approve', token: 'x' }), { Origin: origin });
-    assert.equal(semToken.status, 403);
-    const before = coords.reduce((n, c) => n + c.decided.length, 0);
-
-    const ok = await post(form({ tipo: 'oferta', numero: '1', decisao: 'approve', token }), { Origin: origin });
-    assert.equal(ok.status, 200);
-    assert.match(ok.body, /decidido: oferta/);
-    const semValor = await post(form({ tipo: 'campanha', numero: '2', confirmo: 'sim', token }), { Origin: origin });
-    assert.match(semValor.body, /Digite o valor por dia/);
-    const semConfirmar = await post(form({ tipo: 'campanha', numero: '2', valor: '20', token }), { Origin: origin });
-    assert.match(semConfirmar.body, /Marque a confirmação/);
-    assert.equal(coords.reduce((n, c) => n + c.decided.length, 0), before + 1, 'só a decisão completa chegou ao coordenador');
+  test('api/decidir: exige Origin e token; campanha só com valor e confirmação', async () => {
+    const token = await tokenDoPainel();
+    const origin = `http://127.0.0.1:${server.port}`;
+    const antes = coords.reduce((n, c) => n + c.decided.length, 0);
+    assert.equal((await postJson('/api/decidir', { tipo: 'oferta', numero: '1', decisao: 'approve', token })).status, 403);
+    assert.equal((await postJson('/api/decidir', { tipo: 'oferta', numero: '1', decisao: 'approve', token: 'x' }, { Origin: origin })).status, 403);
+    const ok = await postJson('/api/decidir', { tipo: 'oferta', numero: '1', decisao: 'approve', token }, { Origin: origin });
+    assert.equal(JSON.parse(ok.body).texto, 'decidido: oferta');
+    const semValor = await postJson('/api/decidir', { tipo: 'campanha', numero: '2', confirmo: 'sim', token }, { Origin: origin });
+    assert.match(JSON.parse(semValor.body).texto, /Digite o valor por dia/);
+    const semConfirmar = await postJson('/api/decidir', { tipo: 'campanha', numero: '2', valor: 20, token }, { Origin: origin });
+    assert.match(JSON.parse(semConfirmar.body).texto, /Marque a confirmação/);
+    const rodar = await postJson('/api/decidir', { tipo: 'rodar', chave: 'nao-existe', token }, { Origin: origin });
+    assert.equal(JSON.parse(rodar.body).texto, 'Esse pedido de rodar não existe mais.');
+    assert.equal(coords.reduce((n, c) => n + c.decided.length, 0), antes + 1, 'só a decisão completa chegou ao coordenador');
   });
 });
 
@@ -197,8 +236,8 @@ describe('lerDecisao', () => {
     assert.equal(typeof p({ tipo: 'video', numero: '1.5', decisao: 'reject' }), 'string');
     assert.equal(typeof p({ tipo: 'oferta', numero: '1', decisao: 'talvez' }), 'string');
     assert.equal(typeof p({ tipo: 'cancelar-trabalho', kind: 'campanha', numero: '1' }), 'string');
-    assert.equal(typeof p({ tipo: 'rodar', tela: 'banco' }), 'string');
-    assert.deepEqual(p({ tipo: 'rodar', tela: 'codigo' }), { tipo: 'rodar' });
+    assert.equal(typeof p({ tipo: 'rodar' }), 'string');
+    assert.deepEqual(p({ tipo: 'rodar', chave: 'painel:codigo' }), { tipo: 'rodar' });
     assert.equal(typeof p({ tipo: 'apagar-tudo' }), 'string');
   });
 });

@@ -36,13 +36,14 @@ Joel ──clica──▶ painel http://127.0.0.1:4517/painel ──▶ mesmo co
 
 1. **Instalar o OpenBot.** Instalado em 18/11/2026: versão 0.73.0, em `%LOCALAPPDATA%\Programs\OpenBot`. O hash SHA-256 conferiu com o `SHA256SUMS-windows.txt` e a assinatura é válida (SYNTHETIFY LABS).
 2. **Abrir o NIGHT** com `pnpm night:voz`, `pnpm night` ou `pnpm night:servidor`. Confira se aparece a linha "Telas do OpenBot (MCP): http://127.0.0.1:4517/mcp".
-3. **Ligar o MCP do NIGHT no OpenBot.**
+3. **Ligar o MCP do NIGHT no OpenBot** (depois do passo 4, para as telas já existirem). Também dá para pedir na tela NIGHT: "adicione o servidor MCP por URL http://127.0.0.1:4517/mcp com o nome night"; ela pede a sua aprovação.
    - Vá em Marketplace → Apps → servidor personalizado por URL.
    - Nome: `night`. URL: `http://127.0.0.1:4517/mcp`.
    - Na seção Agentes do servidor, deixe só as 6 telas.
-4. **Criar os 6 agentes:** NIGHT, Radar, Produto, Campanha, Código e Vídeo.
-   - Para cada um, copie o arquivo `openbot/telas/<tela>.md` deste repositório para o `AGENTS.md` da pasta do agente, em `~/OpenBot/Agents/<id>/AGENTS.md`.
-   - Também dá para pedir a um agente do OpenBot: "crie o agente Radar com estas instruções" e colar o arquivo.
+4. **Criar os 6 agentes de uma vez:**
+   - Rode `pnpm night:telas`. Ele gera `D:\NIGHT-data\openbot\night-telas.zip` a partir de `openbot/telas/*.md`.
+   - No OpenBot: Configurações do servidor → Importar → escolha esse arquivo.
+   - As instruções de cada tela entram como as regras do agente. Se mudar um `.md`, gere de novo e reimporte.
 5. **Escolher o modelo de cada tela:** Opus ou Codex. Cada mensagem gasta cota da sua conta.
    - O OpenBot avisa que a Anthropic não confirmou o login por assinatura dentro dele.
 6. **Permissões de cada tela:** **Computer Use desligado**, sem navegador e o nível mais fechado que ainda deixe a tela usar o MCP.

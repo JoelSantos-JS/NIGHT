@@ -29,13 +29,13 @@ const HALLUCINATIONS = [
 
 // A voz já existe antes do Night porque os vídeos usam o mesmo Kokoro para narrar.
 const speech = new SpeechService();
-const { memory, llm, llmOk, night, tasks, stuck, runsTasks, close, makeCoordinator, radar } = await createNight({
+const { memory, llm, llmOk, night, tasks, stuck, runsTasks, close, makeCoordinator, radar, connections } = await createNight({
   synth: (text, language, file) => speech.synthesizeToFile(text, language, file),
 });
 if (!runsTasks) console.log('Outra janela do Night já cuida das tarefas de código; esta conversa, pesquisa e salva ideias.');
 if (!llmOk) console.error(`${RED}Aviso: o Ollama não respondeu ou não tem o ${llm.model}. A conversa vai falhar até ele subir.${RESET}`);
 // Telas do OpenBot e painel: só na janela que roda os trabalhos.
-const server = runsTasks ? await startNightServerFor({ makeCoordinator, memory, ofertas: radar, tasks }) : null;
+const server = runsTasks ? await startNightServerFor({ makeCoordinator, memory, ofertas: radar, tasks, conexoes: connections }) : null;
 
 console.log('Carregando a voz (Kokoro + Whisper), leva uns 30 s...');
 const ready = await speech.start();
@@ -91,6 +91,11 @@ const enqueue = (job: () => Promise<void>) => {
 function onUtterance(heard: Transcript) {
   const text = heard.text.trim();
   const n = normalize(text);
+  if (heard.otherVoice !== undefined) {
+    // Só a voz do dono: som do PC, vídeo ou outra pessoa não vira pedido.
+    console.log(`${DIM}(ignorei: não parece a sua voz, semelhança ${heard.otherVoice.toFixed(2)})${RESET}`);
+    return;
+  }
   if (!text && heard.doubt) {
     // O Whisper não teve confiança: melhor não responder do que responder a uma frase inventada.
     console.log(`${DIM}(não entendi direito, confiança ${heard.confidence ?? '?'}: "${heard.doubt}" — fala de novo, mais perto do microfone)${RESET}`);
@@ -105,7 +110,7 @@ function onUtterance(heard: Transcript) {
     console.log(`${DIM}(ignorado, era a minha própria voz: "${text}")${RESET}`);
     return;
   }
-  console.log(`\nvocê › ${text}  ${DIM}[${heard.language} · ${heard.audioSeconds.toFixed(1)} s · transcrito em ${(heard.ms / 1000).toFixed(1)} s · confiança ${heard.confidence ?? '?'}${heard.denoised ? ' · limpei ruído' : ''}]${RESET}`);
+  console.log(`\nvocê › ${text}  ${DIM}[${heard.language} · ${heard.audioSeconds.toFixed(1)} s · transcrito em ${(heard.ms / 1000).toFixed(1)} s${heard.engine ? ` por ${heard.engine}` : ''} · confiança ${heard.confidence ?? '?'}${heard.denoised ? ' · limpei ruído' : ''}]${RESET}`);
   enqueue(() => respond(text, heard.language));
 }
 

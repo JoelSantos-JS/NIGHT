@@ -507,6 +507,8 @@ export function ruleIntent(rawText: string, projectNames: string[]): Intent | nu
   if (FIND.test(n) && FOLDERISH.test(n)) return { kind: 'find-folder', target: targetName(text, FIND) };
   const winPath = text.match(WIN_PATH)?.[1];
   if (winPath && SET_PATH.test(n)) return { kind: 'set-project-path', projectHint: project, path: winPath.replace(/[.,;]+$/, '') };
+  // "Vasculha no seu próprio código...": pesquisa no PC (só leitura), não tarefa de código (D-017).
+  if (PC_SEARCH.test(n) && PC_PLACE.test(n)) return { kind: 'research', query: text.trim() };
   // Pesquisa explícita antes de "o que mudou": "pesquisa o que mudou na versão X" é pesquisa.
   if (RESEARCH.test(n)) return { kind: 'research', query: text.trim() };
   const isQuestion = /\?\s*$/.test(text) || FACT_QUESTION.test(n);
@@ -529,6 +531,22 @@ const CLASSIFY_PROMPT = `Classifique o pedido do usuário. Responda SÓ com JSON
 - coding-task: quer que um agente escreva ou mude código.
 - research: precisa de fato atual ou de pesquisa na internet (preço, notícia, versão, evento recente).
 - chat: qualquer outra coisa (pergunta, conversa, explicação).`;
+
+/** Onde procurar: arquivos do PC (o NIGHT ou um projeto), sem internet (D-017). */
+const PC_PLACE = /\b(seu|teu|nosso|meu|proprio|do night|no night)\b.{0,20}\b(codigo|repositorio|projeto|arquivos?|pastas?)\b|\bno codigo\b|\bnos arquivos\b|\bno repositorio\b|\bna pasta\b|\bno (meu )?(pc|computador)\b|\b(your|our|my) (own )?(code|codebase|repo|repository|files?)\b|\bin the (code|codebase|repo|files)\b/;
+const PC_SEARCH = /\b(vasculh\w*|procur\w*|olh\w*|verifi\w*|busc\w*|ach\w*|pesquis\w*|ve|veja|search|look|check|find)\b/;
+const WEB_PLACE = /\b(na internet|na web|online|no google|em sites?|nos sites|na documentacao oficial|on the web|on the internet)\b/;
+const BOTH_PLACES = /\b(os dois|ambos|nos dois|both)\b/;
+
+/**
+ * Pesquisa na internet (padrão), no PC (arquivos, sem internet) ou nos dois. "Os dois" é obedecido: roda as duas
+ * pesquisas separadas e junta as respostas (nenhuma sessão lê arquivo E abre página ao mesmo tempo).
+ */
+export function researchScope(text: string): 'web' | 'pc' | 'ambos' {
+  const n = normalize(text);
+  if (!PC_PLACE.test(n)) return 'web';
+  return WEB_PLACE.test(n) || BOTH_PLACES.test(n) ? 'ambos' : 'pc';
+}
 
 const LLM_INTENTS = new Set(['chat', 'save-idea', 'find-ideas', 'status', 'coding-task', 'research']);
 

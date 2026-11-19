@@ -142,3 +142,41 @@ acima de 4 kHz (voz normal: 5–15%): Bluetooth em modo de ligação corta as co
 Próximo passo: calibrar com o microfone do celular (Iriun) ou com fio. Com outro microfone, o fone também volta a
 tocar a voz do Night em qualidade de música (o microfone aberto força o modo de ligação).
 Também: nome de projeto com 1 letra errada a cada 4 é aceito no roteador ("soken" → Soaken).
+
+## D-015 — Parakeet (motor do OpenBot) não resolve o microfone Bluetooth (18/11/2026)
+Pedido do Joel: "veja o que o OpenBot faz" com a voz. O OpenBot transcreve no PC com o Parakeet TDT 0.6B v3
+(sherpa-onnx, int8). Medido com as 13 falas da calibragem no fone BW06 (`services/speech/bench_parakeet.py`):
+| motor | palavras erradas | nomes errados | tempo por 1 s de fala |
+|---|---|---|---|
+| Parakeet TDT 0.6B v3 | 31,6% | 11/14 | 0,08 s |
+| Whisper small + frase de ajuda | 29,4% | 6/14 | 0,74 s |
+Os dois erram as mesmas frases do mesmo jeito ("Roda o AWS Prep" → "Hot W S Plap" / "Hot WS, plebe"): confirma D-014,
+o áudio do Bluetooth em modo de ligação é o gargalo. O Parakeet é 10x mais rápido mas erra mais nomes (não aceita
+frase de ajuda), então o Whisper small continua. O Parakeet fica instalado (`night_speech/parakeet.py`, modelo em
+`D:/NIGHT-data/modelos`) para medir de novo com outro microfone.
+
+## D-016 — Transcrição pelo Groq e só a voz do dono (18/11/2026)
+Com o mesmo fone Bluetooth (sem outro microfone), medido com as 13 falas da calibragem (`bench_groq.py`):
+| motor | palavras erradas | nomes errados | tempo por fala |
+|---|---|---|---|
+| Groq whisper-large-v3, idioma automático + frase de ajuda PT/EN | 16,9% | 8/14 | 0,5 s |
+| Groq whisper-large-v3-turbo + frase | 18,4% | 6/14 | 0,5 s |
+| Whisper small local (antes) | 29,4% | 6/14 | 2–5 s (detecção de idioma local custava 1,7–2,7 s) |
+O idioma vem do Groq (13/13 certos; o local errou 1). `NIGHT_STT=auto` usa o Groq quando há chave
+(`GROQ_API_KEY` ou `~/.groq/api_key`) e cai no Whisper local se ele falhar; `NIGHT_STT=local` desliga. O áudio da fala
+sai do PC só nesse caso. Plano grátis: 20 pedidos por minuto.
+Só a voz do dono (`night_speech/dono.py`): impressão de voz WeSpeaker ResNet34 pelo sherpa-onnx, perfil montado das
+falas da calibragem. Medido (`bench_dono.py`): Joel 0,80–0,93 de semelhança; outras vozes (Kokoro PT/EN, inclusive
+a do Night, com som de Bluetooth) até 0,66. Limite 0,70 (`NIGHT_SPEAKER_MIN`): 13/13 do Joel aceitas, 0/18 de outras.
+O teste vem antes do Groq: som do PC nem gasta cota. Trocar de microfone pede recalibrar (o perfil é do fone BW06).
+`NIGHT_SPEAKER=off` desliga.
+
+## D-017 — Pesquisa no PC separada da pesquisa na internet; "os dois" obedece (18/11/2026)
+Pedido do Joel: o NIGHT dizia "não consigo vasculhar o código daqui". Agora há três escopos (`researchScope` no
+roteador): internet (padrão), PC ("no seu código", "nos arquivos do Soaken", "no meu pc") e os dois ("os dois",
+"no código e na internet"). A pesquisa no PC (`ClaudeLocalResearch`, `CodexLocalResearch`) lê só a pasta do projeto
+citado ou do NIGHT, com Read/Grep/Glob, sem internet e sem Bash; pastas de chaves (`.groq`, `.deepseek`, `.codex`,
+`.claude`, `.ssh`, `.env`...) ficam negadas, e o que parecer chave na resposta é apagado (`redactKeyLike`).
+"Os dois" roda as duas sessões separadas ao mesmo tempo e um modelo da conversa, sem ferramentas, junta as
+respostas: nenhuma sessão lê arquivo E abre página, então uma página maliciosa não consegue levar uma chave para fora.
+Teste real (18/11): pedido para ler `~/.groq/api_key` foi recusado e a resposta listou os agentes de `src/agents`.

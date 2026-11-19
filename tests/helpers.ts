@@ -41,10 +41,12 @@ export class FakeLlm implements LocalLlm {
 export class FakeResearcher {
   questions: string[] = [];
   contexts: (string | undefined)[] = [];
+  roots: (string | undefined)[] = [];
   constructor(readonly id: string, private readonly behavior: string | Error) {}
-  async ask(question: string, _language?: string, context?: string): Promise<{ answer: string; ms: number }> {
+  async ask(question: string, _language?: string, context?: string, opts?: { root?: string }): Promise<{ answer: string; ms: number }> {
     this.questions.push(question);
     this.contexts.push(context);
+    this.roots.push(opts?.root);
     if (this.behavior instanceof Error) throw this.behavior;
     return { answer: this.behavior, ms: 1234 };
   }

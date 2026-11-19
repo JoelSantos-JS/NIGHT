@@ -3,7 +3,7 @@
 import { createNight } from './bootstrap.ts';
 import { startNightServerFor } from './server-start.ts';
 
-const { memory, llm, llmOk, tasks, stuck, runsTasks, close, makeCoordinator, radar } = await createNight();
+const { memory, llm, llmOk, tasks, stuck, runsTasks, close, makeCoordinator, radar, connections } = await createNight();
 if (!runsTasks) {
   console.log('Outra janela do Night já roda os trabalhos; o servidor das telas sobe nela. Fechando esta.');
   await close();
@@ -14,7 +14,7 @@ if (!llmOk) console.error(`Aviso: o Ollama não respondeu ou não tem o modelo $
 if (stuck.length) console.log(`${stuck.length} tarefa(s) estavam rodando quando o Night fechou; marquei como falha.`);
 tasks.on('update', (u) => { if (u.important) console.log(`night › ${u.message}`); });
 
-const server = await startNightServerFor({ makeCoordinator, memory, ofertas: radar, tasks });
+const server = await startNightServerFor({ makeCoordinator, memory, ofertas: radar, tasks, conexoes: connections });
 if (!server) {
   await close();
   await memory.close();

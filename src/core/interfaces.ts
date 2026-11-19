@@ -35,6 +35,10 @@ export interface Transcript {
   confidence?: number;
   /** O áudio tinha ruído forte e foi limpo antes de transcrever. */
   denoised?: boolean;
+  /** Não parecia a voz do dono (vídeo tocando, outra pessoa): semelhança com o perfil; nada foi transcrito. */
+  otherVoice?: number;
+  /** Quem transcreveu (ex.: 'groq:whisper-large-v3' ou 'small' local). */
+  engine?: string;
   /** Onde a fala foi salva (só com NIGHT_SAVE_AUDIO_DIR, para calibragem). */
   audioPath?: string;
 }

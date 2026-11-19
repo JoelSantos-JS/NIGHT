@@ -10,4 +10,5 @@ dependencies = [
   "soundfile>=0.12",
   "numpy",
   "noisereduce>=3",
+  "sherpa-onnx>=2.0",
 ]
