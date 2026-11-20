@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import pg from 'pg';
-import { forSpeech, nightDataRoot, NightCoordinator } from '../src/app/coordinator.ts';
+import { forSpeech, nightDataRoot, NightCoordinator, PALAVRAS_LOW_TICKET } from '../src/app/coordinator.ts';
 import { QuotaError } from '../src/agents/research.ts';
 import type { Job, Project } from '../src/core/types.ts';
 import type { JobRunner } from '../src/jobs/runner.ts';
@@ -157,6 +157,13 @@ describe('NightCoordinator', () => {
     const [video] = await mem.listJobs({ kind: 'video' });
     assert.equal(video!.number, 1);
     assert.equal(llm.calls.length, 0, 'registrar trabalho não gasta modelo');
+  });
+
+  test('Radar de low-ticket varre as frases do método, não a palavra "low ticket"', async () => {
+    await night.handle('vasculha ofertas de low ticket');
+    const [radar] = await mem.listJobs({ kind: 'radar' });
+    assert.deepEqual(radar!.params, { query: 'low ticket', keywords: PALAVRAS_LOW_TICKET });
+    assert.ok(PALAVRAS_LOW_TICKET.includes('acesso vitalício'));
   });
 
   test('pedido repetido no mesmo minuto não cria outro trabalho', async () => {

@@ -225,3 +225,18 @@ Pedido do Joel: cadastrar o NIGHT no OpenBot, ver no NIGHT o que o OpenBot faz e
   as instruções digam que a tela não age no PC. Com o NIGHT mandando tarefas, isso tem que ser fechado no OpenBot
   (acesso com aprovação e sem controle do computador). Decisão do Joel em 20/11: **manter acesso total e controle do
   computador por enquanto**.
+
+## D-020 — Conector da Meta ligado; busca de ferramentas obrigatória; Radar lê a Biblioteca (20/11/2026)
+- Conector oficial `meta-ads` (`https://mcp.facebook.com/ads`) cadastrado no escopo do usuário e logado pelo Joel
+  (`claude mcp login meta-ads`, numa janela de terminal de verdade: sem TTY o login não fecha).
+- **As ferramentas da Meta somam mais de 200 mil tokens de descrição.** Com `--strict-mcp-config` todas entravam no
+  contexto e a sessão nem começava. As três chamadas do NIGHT (criar, ler campanha, Radar) agora passam
+  `--settings {"env":{"ENABLE_TOOL_SEARCH":"true"}}` e liberam `ToolSearch` junto da ferramenta da etapa.
+- Nomes reais conferidos: `ads_create_campaign`, `ads_create_ad_set`, `ads_create_ad`, `ads_get_ad_entities` (os
+  palpites do código estavam certos), `ads_library_search` (Biblioteca). Existem `ads_activate_entity` e
+  `ads_update_entity`: o NIGHT nunca libera essas (regra `NUNCA` em `src/ads/meta-writer.ts`).
+- **R01:** a Biblioteca pelo MCP traz anúncios comerciais do Brasil ("fone bluetooth": 5 de ~2.938, 87 s). Não traz
+  link de destino nem anúncios ativos no domínio: essas notas ficam parciais (correto: nada inventado). O Radar agora
+  usa essa busca por padrão; `NIGHT_META_READ_TOOLS=off` desliga.
+- Contas: uma das contas de anúncios do Joel está desativada pela Meta ("atividade incomum"); duas estão ativas. A
+  campanha só roda depois de o Joel escolher qual vai em `NIGHT_META_AD_ACCOUNT`.

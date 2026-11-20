@@ -45,6 +45,16 @@ const HISTORY_TURNS = 6;
 const FOLLOW_UP_MS = 3 * 60_000;
 const FOLLOW_UP = /\b(traz|traga|trazer|mostra|mostre|me fala|fala mais|conta mais|me conta|detalha|detalhe|lista|liste|quais|qual foi|e os|e as|mais sobre|comentarios?|opinioes|opiniao|resenhas?|onde|quando|quem|quanto|bring|show me|tell me more|more about|what about|which|comments|reviews)\b/;
 const QWEN_HISTORY_TURNS = 3;
+/**
+ * Pedido genérico de low-ticket ("vasculha ofertas de low ticket"): o Radar varre as frases que esse tipo de oferta
+ * usa no anúncio, como no método de referência (docs/research/radar-de-ofertas-franklim-extracao.md, pág. 4), em vez
+ * de buscar literalmente "low ticket" na Biblioteca. Nicho concreto ("fone bluetooth") continua sendo a busca.
+ */
+export const PALAVRAS_LOW_TICKET = [
+  'apenas R$ 47', 'apenas R$ 67', 'apenas R$ 97', 'de R$ 197 por R$ 67',
+  'acesso vitalício', 'curso completo passo a passo', 'método comprovado', 'garantia de 7 dias',
+];
+const LOW_TICKET = /\b(low[ -]?ticket|infoprodutos?|produtos? digita(l|is))\b/i;
 
 const SYSTEM_PROMPT: Record<Language, string> = {
   'pt-BR': `Você é o Night, assistente pessoal do Joel, rodando no computador dele.
@@ -383,7 +393,8 @@ export class NightCoordinator {
       case 'coding-task': out = await this.codingTask(intent, language); break;
       case 'cancel': out = await this.cancel(intent, language); break;
       case 'approval': out = await this.approval(intent, language); break;
-      case 'radar-search': out = await this.createWork('radar', text, { query: intent.query }, language); break;
+      case 'radar-search': out = await this.createWork('radar', text, LOW_TICKET.test(intent.query)
+        ? { query: intent.query, keywords: PALAVRAS_LOW_TICKET } : { query: intent.query }, language); break;
       case 'video-create': out = await this.createWork('video', text, { topic: intent.topic }, language); break;
       case 'job-status': ({ text: out, detail } = await this.jobStatus(intent, language)); break;
       case 'job-cancel': out = await this.cancelJob(intent, language); break;

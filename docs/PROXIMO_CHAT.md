@@ -122,7 +122,7 @@ A passagem anterior, de 17/11, tem o detalhe de Radar, low-ticket, campanha na M
 - **WhatsApp como o OpenBot faz:** só pesquisado por voz, sem resposta registrada. Mandar mensagem é ação para fora, então precisa de aprovação do dono.
 
 ### 3.4 Da passagem de 17/11, ainda abertos
-- **Meta (prioridade do negócio):** o Joel liga o conector (`claude mcp add --transport http meta-ads https://mcp.facebook.com/ads`, `/mcp`, chave "Editar status" sempre desligada) e passa o `act_…`. Depois, M01, M02/R01 e M04 real (seção 3 da passagem de 17/11).
+- **Meta (prioridade do negócio), atualizado 20/11 (D-020):** conector logado; nomes das ferramentas conferidos; Radar já busca na Biblioteca (sem link de destino). **Falta:** o Joel escolher a conta (`NIGHT_META_AD_ACCOUNT`), o teste de escrita recusada (M01) e o M04 real com ele acompanhando. **Ideia aprovada em conversa:** botão "Conectar Meta" no painel com login próprio do NIGHT (sem depender do Claude Code); antes, confirmar se o login da Meta exige app próprio.
 - **Revisão do Codex que falta:** `src/ads/`, `src/lowticket/`, `src/radar/meta-mcp-source.ts` e os comandos novos. Também a pesquisa no PC, a voz pelo Groq e o painel novo (segurança). Rodar quando o Codex tiver cota (sexta) e tratar cada achado. **Nunca passar chave ao Codex nem ao DeepSeek.**
 - **Comandos pequenos:** "como está o produto 1?", "mostra o produto da oferta 2" (L07), "cria os criativos da oferta 2" (L04) e a análise do teste por números ditados (L05/L06).
 - **Antes de vender:** licença comercial do OpenBot (PolyForm Noncommercial; Starter €10/mês, Team €25/mês, ou acordo pelo licenses@openbot.run); login de verdade no painel; tirar o "Joel" do código (152 ocorrências); cada cliente com a própria chave de API; instalador.

@@ -422,7 +422,7 @@ function radarQuery(text: string): string {
   const m = text.match(/\b(?:ofertas?|offers?|radar)\b\s*(?:de|do|da|dos|das|para|pra|sobre|on|for|about|em|in)\s+(.+)$/i);
   if (m?.[1]) return trimQueryTail(m[1]);
   return trimQueryTail(text
-    .replace(/^.*?\b(?:vasculha|vasculhe|vasculhar|procura|procure|procurar|busca|busque|buscar|roda|rode|rodar|search|find|look for|run)\b/i, '')
+    .replace(/^.*?\b(?:vasculha|vasculhe|vasculhar|procura|procure|procurar|busca|busque|buscar|roda|rode|rodar|pesquisa|pesquise|pesquisar|minera|minere|minerar|search|find|look for|run)\b/i, '')
     .replace(/^\s*(?:o|a|as|os|the)\s+/i, '')
     .replace(/^\s*(?:ofertas?|offers?|radar)\b/i, '')
     .replace(/^\s*(?:de|do|da|para|pra|sobre|on|for|about)\s+/i, '')
@@ -430,10 +430,32 @@ function radarQuery(text: string): string {
 }
 
 /** "vasculha ofertas de X", "procura ofertas de X", "roda o radar de X" (PT e EN). */
+/** "pesquisa ofertas de X", "minera ofertas": verbo de pesquisa no começo, com "ofertas" ou "radar" na frase. */
+const RADAR_RESEARCH_VERB = /^(?:por favor\s+|pode\s+|agora\s+|ok\s+)?(pesquisa|pesquise|pesquisar|minera|minere|minerar|garimpa|garimpe|garimpar)\b/;
+/** "consegue pesquisar no radar de ofertas pra mim?": o nome do agente com qualquer verbo de busca (uso real 20/11). */
+const RADAR_BY_NAME = /\bradar de ofertas\b/;
+const ANY_SEARCH_VERB = /\b(pesquisa\w*|vasculha\w*|procura\w*|busca\w*|minera\w*|garimpa\w*|roda\w*|search|find|run)\b/;
+/** O Radar é de low-ticket: sem nicho dito, o nicho é esse (os subnichos saem da pesquisa). */
+const RADAR_DEFAULT_NICHE = 'low ticket';
+/** "pesquisa produtos de lowticket": low-ticket é o nicho do Radar, então vale como alvo mesmo sem "ofertas". */
+const LOW_TICKET_WORD = /\b(low ?ticket|infoprodutos?)\b/;
+/** "o que é o radar de ofertas?" é pergunta sobre o Radar, não pedido de busca. */
+const ABOUT_RADAR = /\bo que (e|eh|sao)\b|\bcomo funciona\b/;
+const NICHE_FILLER = /^(?:(?:no|na|o|a|pelo|pela)\s+)?(?:radar|ofertas?|offers?|produtos?|algo|alguma coisa|coisas?|tudo|pra mim|para mim)?$/i;
+
 function radarSearchIntent(text: string, n: string): Intent | null {
   const hasTarget = new RegExp(`\\b(?:${OFFER_SRC})\\b`).test(n) || new RegExp(`\\b${RADAR_SRC}\\b`).test(n);
-  if (!hasTarget || !SEARCH_VERB.test(n)) return null;
-  return { kind: 'radar-search', query: radarQuery(text) };
+  if (ABOUT_RADAR.test(n)) return null;
+  const byName = RADAR_BY_NAME.test(n) && ANY_SEARCH_VERB.test(n);
+  const verb = SEARCH_VERB.test(n) || RADAR_RESEARCH_VERB.test(n);
+  const lowTicket = LOW_TICKET_WORD.test(n) && verb;
+  if (!byName && !lowTicket && (!hasTarget || !verb)) return null;
+  const limpo = text.replace(/\bradar de ofertas\b/gi, 'radar').replace(/\s+(?:pra|para) mim\b/gi, '').replace(/[?]+$/, '');
+  const query = radarQuery(limpo);
+  if (NICHE_FILLER.test(query.trim())) return { kind: 'radar-search', query: RADAR_DEFAULT_NICHE };
+  // "produtos de lowticket" sem subnicho: o nicho é low-ticket mesmo.
+  if (lowTicket && /^(?:(?:produtos?|ofertas?|coisas?)\s+(?:de|do|da)\s+)?(low ?ticket|infoprodutos?)$/i.test(query.trim())) return { kind: 'radar-search', query: RADAR_DEFAULT_NICHE };
+  return { kind: 'radar-search', query };
 }
 
 /** "cria um vídeo sobre X", "faz um vídeo de X" (PT e EN). */

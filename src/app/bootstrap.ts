@@ -135,7 +135,10 @@ export async function createNight(opts: CreateNightOptions = {}) {
   const offerLinks = await PgOfferLinks.open();
   // Meta (seção M): a fonte do Radar só liga com as ferramentas de leitura conhecidas (M01), e a
   // montagem de campanha só com a conta de anúncios. Sem isso, cada fluxo explica o que falta.
-  const metaReadTools = (process.env.NIGHT_META_READ_TOOLS ?? '').split(',').map((t) => t.trim()).filter(Boolean);
+  // Busca da Biblioteca de Anúncios pelo MCP oficial da Meta (nome conferido em 20/11, R01: anúncios comerciais do
+  // Brasil vêm). NIGHT_META_READ_TOOLS troca a lista; 'off' desliga e o Radar volta a esperar uma fonte.
+  const metaReadTools = process.env.NIGHT_META_READ_TOOLS === 'off' ? []
+    : (process.env.NIGHT_META_READ_TOOLS ?? 'mcp__meta-ads__ads_library_search').split(',').map((t) => t.trim()).filter(Boolean);
   const metaAdAccount = process.env.NIGHT_META_AD_ACCOUNT?.trim() || null;
   // Relatório da campanha (M07): mesma pasta do writer, e o nome da ferramenta pode mudar no beta.
   const metaInsightsTool = process.env.NIGHT_META_INSIGHTS_TOOL?.trim() || undefined;
@@ -188,7 +191,7 @@ export async function createNight(opts: CreateNightOptions = {}) {
       advisor,
       generator: textGenerator,
     });
-    // R01 ainda não provado: o Radar espera 'fonte' em vez de inventar anúncio.
+    // Sem fonte (NIGHT_META_READ_TOOLS=off), o Radar espera 'fonte' em vez de inventar anúncio.
     const radar = new RadarWorker({
       store: radarStore,
       artifacts,
@@ -274,7 +277,7 @@ export async function createNight(opts: CreateNightOptions = {}) {
     { nome: 'Banco (PostgreSQL)', ok: true, detalhe: 'conectado' },
     { nome: 'Modelo local (Ollama)', ok: await llm.available(), detalhe: llm.model },
     { nome: 'DeepSeek (parecer e reserva)', ok: hasDeepSeek, detalhe: hasDeepSeek ? 'chave encontrada' : 'sem chave: defina DEEPSEEK_API_KEY ou ~/.deepseek/api_key' },
-    { nome: 'Meta: leitura da Biblioteca (Radar)', ok: metaReadTools.length > 0, detalhe: metaReadTools.length ? metaReadTools.join(', ') : 'falta ligar o conector e definir NIGHT_META_READ_TOOLS (M01)' },
+    { nome: 'Meta: leitura da Biblioteca (Radar)', ok: metaReadTools.length > 0, detalhe: metaReadTools.length ? metaReadTools.join(', ') : 'desligada (NIGHT_META_READ_TOOLS=off)' },
     { nome: 'Meta: conta de anúncios (campanha)', ok: metaAdAccount !== null, detalhe: metaAdAccount ?? 'falta NIGHT_META_AD_ACCOUNT' },
     { nome: 'OpenBot (automação)', ok: openbot.estado().ligado, detalhe: openbot.estado().motivo ?? `agentes: ${openbot.estado().agentes.map((a) => a.nome).join(', ')}` },
     { nome: 'OpenBot (telas)', ok: existsSync(join(process.env.LOCALAPPDATA ?? '', 'Programs', 'OpenBot', 'OpenBot.exe')), detalhe: 'telas pelo servidor MCP; pacote com pnpm night:telas' },

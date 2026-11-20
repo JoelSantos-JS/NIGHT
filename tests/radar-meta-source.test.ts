@@ -79,11 +79,12 @@ describe('sessão do Claude Code com o MCP da Meta', () => {
       mcpServers: { 'meta-ads': { type: 'http', url: 'https://mcp.facebook.com/ads' } },
     });
 
-    // Entre --allowedTools e --disallowedTools só entram as ferramentas de leitura.
+    // Entre --allowedTools e --disallowedTools só entram as ferramentas de leitura e a busca de ferramentas
+    // (as da Meta somam mais de 200 mil tokens; sem a busca a sessão nem começa).
     const inicio = chamada.args.indexOf('--allowedTools') + 1;
     const fim = chamada.args.indexOf('--disallowedTools');
     assert.ok(inicio > 0 && fim > inicio);
-    assert.deepEqual(chamada.args.slice(inicio, fim), [FERRAMENTA_LEITURA]);
+    assert.deepEqual(chamada.args.slice(inicio, fim), [FERRAMENTA_LEITURA, 'ToolSearch']);
 
     // Nenhuma ferramenta de escrita aparece em lugar nenhum da linha de comando.
     for (const proibida of ['ads_create_campaign', 'ads_update_entity', 'ads_activate_entity']) {

@@ -138,7 +138,9 @@ export class ClaudeMcpMetaReader implements MetaInsightsReader {
     const args = [
       '-p', prompt,
       '--mcp-config', this.configFile, '--strict-mcp-config',
-      '--allowedTools', this.tool,
+      // Mais de 200 mil tokens de ferramentas da Meta (20/11): só a busca carrega a de leitura.
+      '--settings', '{"env":{"ENABLE_TOOL_SEARCH":"true"}}',
+      '--allowedTools', this.tool, 'ToolSearch',
       '--disallowedTools', 'Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch',
       '--permission-mode', 'default',
       '--output-format', 'json', '--no-session-persistence',

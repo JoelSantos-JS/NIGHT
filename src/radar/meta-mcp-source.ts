@@ -258,7 +258,9 @@ export class MetaMcpAdSource implements AdSource {
       '-p', prompt,
       '--mcp-config', join(this.workDir, ARQUIVO_CONFIG),
       '--strict-mcp-config',
-      '--allowedTools', ...this.readTools,
+      // Mais de 200 mil tokens de ferramentas da Meta (20/11): só a busca carrega as de leitura.
+      '--settings', '{"env":{"ENABLE_TOOL_SEARCH":"true"}}',
+      '--allowedTools', ...this.readTools, 'ToolSearch',
       '--disallowedTools', 'Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch',
       '--permission-mode', 'default',
       '--output-format', 'json', '--no-session-persistence',
