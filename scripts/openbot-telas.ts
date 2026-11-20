@@ -26,12 +26,17 @@ const LIMITE_INSTRUCOES = 2000;
 
 /**
  * Skills de openbot/skills que vão junto de cada agente (revisadas; origem e licença em openbot/skills/TERCEIROS.md).
- * O vídeo está parado por decisão do Joel: a viral-video-studio só entra quando ele pedir.
+ * viral-video-studio é do Joel (sem licença de terceiro); liberada por ele em 20/11, com o vídeo ainda parado. Só o
+ * SKILL.md existe: as pastas references/, schemas/ e scripts/ que ela cita não vieram junto.
  */
 export const SKILLS_DA_TELA: Partial<Record<Tela, string[]>> = {
   design: ['frontend-design', 'ui-ux-pro-max'],
   marketing: ['copywriting', 'cro', 'ad-creative'],
+  video: ['viral-video-studio'],
 };
+
+/** Skills feitas pelo Joel: não levam licença de terceiro. */
+export const SKILLS_PROPRIAS = new Set(['viral-video-studio']);
 
 /** Caminho da skill dentro do .zip: o importador do OpenBot exige `agents/<chave>/…` e um SKILL.md na pasta. */
 const caminhoSkill = (t: Tela, skill: string): string => `agents/${t}/skills/${skill}`;

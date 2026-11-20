@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { SKILLS_DA_TELA, arquivosDasSkills, buildImportManifest, zipStored } from '../scripts/openbot-telas.ts';
+import { SKILLS_DA_TELA, SKILLS_PROPRIAS, arquivosDasSkills, buildImportManifest, zipStored } from '../scripts/openbot-telas.ts';
 import { TELAS } from '../src/app/server.ts';
 
 const ler = (t: string) => readFileSync(join(import.meta.dirname, '..', 'openbot', 'telas', `${t}.md`), 'utf8');
@@ -62,10 +62,10 @@ test('skills ligadas: cada pasta tem SKILL.md com o mesmo nome e licença, e o c
       const fim = linhas.indexOf('---', 1);
       assert.equal(linhas[0], '---');
       assert.ok(fim > 0 && linhas.slice(1, fim).includes(`name: ${s}`), `${s}: name diferente da pasta`);
-      assert.ok(arquivos.some((a) => a.name.startsWith(`agents/${tela}/skills/${s}/LICENSE`)), `${s} sem licença`);
+      if (!SKILLS_PROPRIAS.has(s)) assert.ok(arquivos.some((a) => a.name.startsWith(`agents/${tela}/skills/${s}/LICENSE`)), `${s} sem licença`);
     }
   }
-  // Nenhum caminho com barra invertida, "..", ou cache do Python; e o vídeo (parado) não leva skill.
-  for (const a of arquivos) assert.doesNotMatch(a.name, /\|\.\.|__pycache__/);
-  assert.deepEqual(m.agents.find((a) => a.key === 'video')!.skills, []);
+  // Nenhum caminho com barra invertida, ".." ou cache do Python.
+  for (const a of arquivos) assert.doesNotMatch(a.name, /\\|\.\.|__pycache__/);
+  assert.deepEqual(m.agents.find((a) => a.key === 'video')!.skills, ['agents/video/skills/viral-video-studio']);
 });

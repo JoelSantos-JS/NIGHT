@@ -1,6 +1,6 @@
 # NIGHT: passagem para o próximo chat
 
-**Escrito em 20/11/2026.** Para um Claude novo, sem a memória desta conversa, e para o Joel. Leia inteiro antes de mexer. Depois leia o [.agents/em-andamento.md](../.agents/em-andamento.md) e as decisões D-016 a D-020 em [DECISIONS.md](DECISIONS.md).
+**Escrito em 20/11/2026.** Para um Claude novo, sem a memória desta conversa, e para o Joel. Leia inteiro antes de mexer. Depois leia o [.agents/em-andamento.md](../.agents/em-andamento.md) e as decisões D-016 a D-021 em [DECISIONS.md](DECISIONS.md).
 
 As passagens anteriores continuam no histórico:
 - 17/11 (Radar, low-ticket, campanha, vídeo): `git show 15ce5f5:docs/PROXIMO_CHAT.md`
@@ -21,10 +21,10 @@ As passagens anteriores continuam no histórico:
 - **Falta, com o Joel:**
   1. Rodar "pesquisa produtos de lowticket" e ver a primeira oferta com nota real.
   2. Importar os 2 agentes novos no OpenBot. O arquivo é `D:\NIGHT-data\openbot\night-telas-design-marketing.zip`; gere de novo com `pnpm night:telas design marketing`. Caminho: Configurações do servidor → Importar. Depois, ligar o MCP `night` neles.
-  3. Decidir se a `viral-video-studio` entra no agente de vídeo (o vídeo está parado).
+  3. A `viral-video-studio` foi liberada pelo Joel e vai no agente de vídeo (`pnpm night:telas video`), mas só tem o `SKILL.md`: as pastas `references/`, `schemas/` e `scripts/` que ela cita não estão no PC. O vídeo continua parado.
   4. Radar fase 2: navegador num perfil separado do Chrome, para trazer dias no ar e preço.
-- **Git:** 8 commits locais sem push (de `6b7fd83` até esta passagem). Confirme com o Joel antes do push.
-- **Worktree antiga do Codex:** `C:\Users\Joel\.codex\worktrees\e6bd\NIGHT` tem `src/workspaces/` sem commit. Pergunte antes de apagar.
+- **Git:** 9 commits locais sem push (de `6b7fd83` até esta passagem). Confirme com o Joel antes do push.
+- **Worktree antiga do Codex** (`…\.codex\worktrees\e6bd\NIGHT`): os 2 arquivos sem commit são iguais aos do projeto. O Joel autorizou apagar; a permissão automática bloqueou. Apagar com `git worktree remove --force` (não tem `node_modules`).
 
 ---
 
