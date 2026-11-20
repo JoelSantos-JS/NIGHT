@@ -137,7 +137,18 @@ O DeepSeek já revisou a voz ao vivo e o OpenBot. Os achados graves foram corrig
 - **WhatsApp** como o OpenBot faz (só pesquisado). Mandar mensagem é ação para fora: precisa de aprovação.
 - Plano de arquitetura do produto (o Joel perguntou como os agentes conversam; resposta na conversa de 20/11: coordenador no centro, quadro de trabalhos, MCP para fora, A2A só depois).
 
-### 3.6 Antes de vender
+### 3.6 Novos agentes e skills que o Joel trouxe (20/11)
+O Joel disse que são as próximas skills e agentes a adicionar. Ainda não foram estudados a fundo nem ligados ao NIGHT.
+- **Agente de UI/UX e marketing** (landing pages, anúncios, criativos): pesquisa em [docs/research/plano-agente-ui-ux-marketing.md](research/plano-agente-ui-ux-marketing.md).
+  - Sugere skills abertas (ui-ux-pro-max, frontend-design, marketingskills, agent-browser ou playwright-mcp, remotion, postiz) e recomenda agentes pequenos ligados a um orquestrador próprio, que é o desenho do NIGHT.
+  - Conversa com o L03 (página de vendas do low-ticket) e com os criativos da campanha.
+  - Antes de instalar qualquer skill de terceiros, revisar o código (risco de `SKILL.md` malicioso, citado no próprio documento).
+- **Skill `viral-video-studio`** do OpenBot: [openbot/skills/viral-video-studio/SKILL.md](../openbot/skills/viral-video-studio/SKILL.md).
+  - O Codex é o roteirista, o Claude Code faz as animações (Remotion) e publica em 4 redes, sempre com revisão antes.
+  - **O vídeo está parado** por pedido do Joel: confirme com ele antes de começar.
+- Próximo passo: perguntar ao Joel a ordem (UI/UX primeiro combina com o Radar e o low-ticket) e fazer um plano curto de cada um no estilo do plano mestre.
+
+### 3.7 Antes de vender
 - Licença comercial do OpenBot (PolyForm Noncommercial).
 - Login de verdade no painel. Hoje qualquer programa do PC usa o `/mcp`, que não tem token.
 - Cada cliente com as próprias chaves e contas.
