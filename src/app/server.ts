@@ -21,11 +21,12 @@ import { VozAoVivo, type RespostaNight, type RpcCliente } from './voz-ao-vivo.ts
 import type { EstadoOpenBot } from '../openbot/tipos.ts';
 
 /** Uma tela por agente no OpenBot; cada uma tem a sua conversa no NIGHT. */
-export const TELAS = ['night', 'radar', 'produto', 'campanha', 'codigo', 'video'] as const;
+export const TELAS = ['night', 'radar', 'produto', 'campanha', 'codigo', 'video', 'design', 'marketing'] as const;
 export type Tela = (typeof TELAS)[number];
 
 const NOME_TELA: Record<Tela, string> = {
   night: 'NIGHT', radar: 'Radar', produto: 'Produto', campanha: 'Campanha', codigo: 'Código', video: 'Vídeo',
+  design: 'Design', marketing: 'Marketing',
 };
 
 const FOCO_TELA: Record<Tela, string> = {
@@ -35,10 +36,13 @@ const FOCO_TELA: Record<Tela, string> = {
   campanha: 'Campanha na Meta, sempre criada pausada.',
   codigo: 'Tarefas de código com Claude e Codex, com revisão.',
   video: 'Vídeos (parado por decisão do Joel).',
+  design: 'Página de vendas e telas do produto low-ticket.',
+  marketing: 'Copy, ângulos e criativos de anúncio.',
 };
 
 const FOCO_CURTO: Record<Tela, string> = {
   night: 'Conversa e pesquisa', radar: 'Ofertas', produto: 'Low-ticket', campanha: 'Meta Ads', codigo: 'Claude e Codex', video: 'Parado',
+  design: 'Landing page', marketing: 'Copy e criativos',
 };
 
 const EXEMPLOS_TELA: Record<Tela, string[]> = {
@@ -48,12 +52,16 @@ const EXEMPLOS_TELA: Record<Tela, string[]> = {
   campanha: ['Monta a campanha da oferta 1', 'Como está a campanha da oferta 1?'],
   codigo: ['Pede pro Claude corrigir o bug do login no meu projeto', 'Mostra as mudanças', 'Roda o meu projeto pra mim'],
   video: ['Cria um vídeo sobre café gelado', 'Como está o vídeo 1?'],
+  design: ['Faz a página de vendas da oferta 1', 'Mostra no celular'],
+  marketing: ['Me dá 5 ângulos para a oferta 1', 'Faz os prompts dos criativos'],
 };
 
 /** Que trabalhos cada tela acompanha ('night' vê todos). */
 const KINDS_TELA: Record<Tela, JobKind[]> = {
   night: ['radar', 'lowticket', 'campanha', 'video', 'coding'],
   radar: ['radar'], produto: ['lowticket'], campanha: ['campanha'], video: ['video'], codigo: ['coding'],
+  // Design e Marketing trabalham dentro do OpenBot; acompanham o produto low-ticket que estão montando.
+  design: ['lowticket'], marketing: ['lowticket'],
 };
 
 export const DEFAULT_PORT = 4517;

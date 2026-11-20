@@ -48,11 +48,123 @@ function fonte(fake: FakeRun, extra: Partial<{ readTools: string[]; country: str
     bin: 'claude-fake',
     readTools: extra.readTools ?? [FERRAMENTA_LEITURA],
     workDir: dir,
+    // Sem isso o padrão chamaria o DeepSeek de verdade: teste não sai para a rede.
+    pdfClassifier: async () => null,
     ...(extra.country ? { country: extra.country } : {}),
   });
 }
 
 describe('sessão do Claude Code com o MCP da Meta', () => {
+  /** Saída stream-json: um tool_result com o texto cru da Meta e a linha final com a resposta do modelo. */
+  function saidaStream(payload: unknown, bruto: string): string {
+    return [
+      JSON.stringify({ type: 'system', subtype: 'init' }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: [{ type: 'text', text: bruto }] }] } }),
+      'aviso solto que não é JSON',
+      JSON.stringify({ type: 'result', result: JSON.stringify(payload), is_error: false }),
+    ].join('\n');
+  }
+
+  /** Como a Meta devolve: JSON dentro da string "results". */
+  function brutoMeta(total: number, ads: { id: string; page_id: string; page_name?: string; ad_creative_link_title?: string }[]): string {
+    return JSON.stringify({ estimated_total_count: total, results: JSON.stringify(ads) });
+  }
+
+  const ADS_TERMO = [
+    { id: '11', page_id: '101', page_name: 'Página A', ad_creative_link_title: 'Planilha "pronta"' },
+    { id: '12', page_id: '102', page_name: 'Página B', ad_creative_link_title: 'Modelo' },
+  ];
+  const BRUTO_OK = [brutoMeta(88, ADS_TERMO), brutoMeta(90, [ADS_TERMO[0]!]), brutoMeta(20, [ADS_TERMO[1]!])].join('\n');
+
+  test('nicheScan confere na resposta da Meta, conta páginas reais e ignora contagem forjada', async () => {
+    const payload = {
+      termo: 'planilhas', estimatedTotal: 88, anunciantesNoNicho: 999,
+      ads: [
+        { id: '11', page_id: '101', page_name: 'Página A', title: 'Planilha "pronta"', delivery_start: 1, ad_snapshot_url: 'https://ads.example/11' },
+        { id: '12', page_id: '102', page_name: 'Página B', title: 'Modelo', delivery_start: 2 },
+      ],
+      paginas: [
+        { page_id: '101', page_name: 'Página A', activeEstimated: 90, titulos: ['Planilha "pronta"', 'Título inventado'] },
+        { page_id: '999', page_name: 'Fantasma', activeEstimated: 99, titulos: [] },
+        { page_id: '102', page_name: 'Página B', activeEstimated: 20, titulos: ['Modelo'] },
+      ], observacoes: '',
+    };
+    const nichos: string[] = [];
+    const fake = new FakeRun(() => ({ code: 0, stdout: saidaStream(payload, BRUTO_OK), stderr: '' }));
+    const source = new MetaMcpAdSource({ run: fake.run, bin: 'claude-fake', readTools: [FERRAMENTA_LEITURA], workDir: dir,
+      pdfClassifier: async (nicho) => { nichos.push(nicho); return true; } });
+    const result = await source.nicheScan('planilhas');
+    assert.equal(fake.calls.length, 1);
+    assert.equal(result.anunciantesNoNicho, 2);
+    assert.equal(result.estimatedTotal, 88);
+    assert.equal(result.ads.length, 2);
+    assert.equal(result.ads[0]?.externalId, 'page:101');
+    assert.equal(result.ads[0]?.adUrl, 'https://ads.example/11');
+    assert.equal(result.ads[0]?.activeAdsInDomain, 90);
+    assert.equal(result.ads[0]?.entregavelEmPdf, true);
+    // Título que a Meta não mandou cai fora; o classificador só ouviu o nicho, uma vez.
+    assert.deepEqual(result.ads[0]?.titulos, ['Planilha "pronta"']);
+    assert.deepEqual(nichos, ['planilhas']);
+    assert.equal(result.ads[0]?.startedAt, undefined);
+    assert.ok(result.observacoes.some((o) => o.includes('999')));
+    const args = fake.calls[0]!.args;
+    for (const safety of ['--strict-mcp-config', '--no-session-persistence', 'ToolSearch', 'Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'stream-json', '--verbose']) {
+      assert.ok(args.includes(safety), safety);
+    }
+    assert.match(args[1]!, /page_ids/);
+  });
+
+  test('nicheScan descarta página com número de anúncios que a Meta não mostrou', async () => {
+    const payload = {
+      termo: 'planilhas', estimatedTotal: 88, ads: [{ id: '11', page_id: '101', page_name: 'Página A' }],
+      paginas: [{ page_id: '101', page_name: 'Página A', activeEstimated: 500, titulos: [] }],
+    };
+    const fake = new FakeRun(() => ({ code: 0, stdout: saidaStream(payload, BRUTO_OK), stderr: '' }));
+    const result = await fonte(fake).nicheScan('planilhas');
+    assert.equal(result.ads.length, 0);
+    assert.ok(result.observacoes.some((o) => o.includes('500 anúncios ativos não aparece')));
+  });
+
+  test('nicheScan recusa total inventado e sessão sem resposta crua da Meta', async () => {
+    const payload = { termo: 'planilhas', estimatedTotal: 7777, ads: [], paginas: [] };
+    const inventado = new FakeRun(() => ({ code: 0, stdout: saidaStream(payload, BRUTO_OK), stderr: '' }));
+    await assert.rejects(fonte(inventado).nicheScan('planilhas'), /7777 não aparece/);
+    const semBruto = new FakeRun(() => ({ code: 0, stdout: respostaMeta({ ...payload, estimatedTotal: 88 }), stderr: '' }));
+    await assert.rejects(fonte(semBruto).nicheScan('planilhas'), /não mostrou a resposta da Meta/);
+  });
+
+  test('nicheScan descarta anúncio sem page_id ou fora da resposta, e aceita anúncio sem título', async () => {
+    const payload = {
+      termo: 'receitas', estimatedTotal: 3,
+      ads: [{ id: '1', page_id: '200' }, { id: '2', page_name: 'Sem página' }, { id: '3', page_id: '200', title: null }, { id: '4', page_id: '300' }],
+      paginas: [{ page_id: '200', page_name: 'Receitas X', activeEstimated: 120, titulos: [] }],
+    };
+    const bruto = [brutoMeta(3, [{ id: '1', page_id: '200' }, { id: '3', page_id: '200' }]), brutoMeta(120, [{ id: '1', page_id: '200' }])].join('\n');
+    const fake = new FakeRun(() => ({ code: 0, stdout: saidaStream(payload, bruto), stderr: '' }));
+    const result = await fonte(fake).nicheScan('receitas');
+    assert.equal(result.anunciantesNoNicho, 1);
+    assert.equal(result.ads.length, 1);
+    assert.equal(result.ads[0]?.activeAdsInDomain, 120);
+    assert.ok(result.observacoes.some((o) => o.includes('anúncio 1 descartado')));
+    assert.ok(result.observacoes.some((o) => o.includes('anúncio 3 descartado: id ou página não aparece')));
+  });
+
+  test('nicheScan usa o país configurado', async () => {
+    const fake = new FakeRun(() => ({ code: 0, stdout: saidaStream({ termo: 'x', estimatedTotal: 0, ads: [], paginas: [] }, brutoMeta(0, [])), stderr: '' }));
+    await fonte(fake, { country: 'PT' }).nicheScan('x');
+    assert.match(fake.calls[0]!.args[1]!, /countries=\["PT"\]/);
+    assert.doesNotMatch(fake.calls[0]!.args[1]!, /"BR"/);
+  });
+
+  test('nicheScan recusa tipo errado em número e id', async () => {
+    const base = { termo: 'pdf', estimatedTotal: 1, ads: [{ id: '1', page_id: '123', page_name: 'Página', title: 'PDF', delivery_start: 1 }],
+      paginas: [{ page_id: '123', page_name: 'Página', activeEstimated: 81, titulos: ['PDF'] }] };
+    for (const payload of [{ ...base, estimatedTotal: '1' }, { ...base, paginas: [{ ...base.paginas[0], page_id: 'x' }] }]) {
+      const fake = new FakeRun(() => ({ code: 0, stdout: saidaStream(payload, brutoMeta(1, [])), stderr: '' }));
+      await assert.rejects(fonte(fake).nicheScan('pdf'), /inválid/);
+    }
+  });
+
   test('roda com MCP estrito e só as ferramentas de leitura liberadas', async () => {
     const fake = new FakeRun(() => ({ code: 0, stdout: respostaMeta({ ads: [], nextCursor: null }), stderr: '' }));
     const source = fonte(fake);

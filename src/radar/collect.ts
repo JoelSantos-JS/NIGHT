@@ -27,6 +27,7 @@ export interface RawAd {
 
 export interface AdSource {
   readonly name: string;
+  nicheScan?(termo: string): Promise<{ ads: RawAd[]; observacoes: string[] }>;
   search(
     keyword: string, cursor: string | null, limit: number,
   ): Promise<{ ads: RawAd[]; nextCursor: string | null }>;
@@ -39,6 +40,8 @@ export interface CollectOptions {
   maxPerKeyword: number;
   /** Teto de páginas por palavra-chave nesta execução. */
   maxPages: number;
+  /** Avisos da busca por nicho (anúncio ou página descartada e por quê), para o relatório. */
+  onAviso?: (texto: string) => void;
 }
 
 export interface CollectCounters {
@@ -101,13 +104,20 @@ function dataCurta(valor: string | null | undefined): string | null {
   return encontrado ? encontrado[1]! : null;
 }
 
+/**
+ * Link de anúncio da Biblioteca (facebook.com/ads/archive/…) não é o site do anunciante: usado como
+ * domínio, juntava todas as páginas de um nicho numa oferta só (achado na revisão de 20/11).
+ */
+const HOSTS_DA_META = /(^|\.)(facebook\.com|fb\.com|fb\.me|instagram\.com)$/;
+
 function destinoDoAnuncio(ad: RawAd): { landingUrl: string | null; landingUrlNorm: string | null; domain: string | null } {
   const landingUrl = ad.landingUrl ?? null;
   const alvo = landingUrl ?? ad.adUrl ?? null;
+  const domain = alvo ? domainOf(alvo) : null;
   return {
     landingUrl,
     landingUrlNorm: landingUrl ? normalizeUrl(landingUrl) : null,
-    domain: alvo ? domainOf(alvo) : null,
+    domain: domain !== null && HOSTS_DA_META.test(domain) ? null : domain,
   };
 }
 
@@ -144,6 +154,20 @@ export async function collect(
 
   for (const keyword of opts.keywords) {
     const conta: CollectCounters = { vistos: 0, novos: 0, duplicados: 0, incompletos: 0 };
+    if (source.nicheScan) {
+      // Uma sessão por nicho; cursor não existe nesta ferramenta.
+      const { ads, observacoes } = await source.nicheScan(keyword);
+      for (const o of observacoes) opts.onAviso?.(`${keyword}: ${o}`);
+      for (const ad of ads) {
+        const novo = toCandidate(ad, source.name, keyword, opts.jobId);
+        const { created } = await store.upsertCandidate(novo);
+        conta.vistos++;
+        if (created) conta.novos++; else conta.duplicados++;
+        if (novo.unknownFields?.length) conta.incompletos++;
+      }
+      porPalavra[keyword] = conta;
+      continue;
+    }
     let cursor = await store.getCursor(opts.jobId, keyword, source.name);
     let paginas = 0;
 

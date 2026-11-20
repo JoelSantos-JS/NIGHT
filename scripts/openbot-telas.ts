@@ -1,4 +1,4 @@
-// `pnpm night:telas`: gera o pacote de importação do OpenBot com as 6 telas do NIGHT.
+// `pnpm night:telas`: gera o pacote de importação do OpenBot com as telas do NIGHT.
 // No OpenBot: Configurações do servidor → Importar → escolher o .zip gerado.
 //
 // Formato: `openbot-import.json` na raiz (format "openbot-agent-import", versão 1), o mesmo que o
@@ -18,6 +18,8 @@ const NOMES: Record<Tela, { name: string; title: string }> = {
   campanha: { name: 'NIGHT Campanha', title: 'Campanha na Meta (sempre pausada)' },
   codigo: { name: 'NIGHT Código', title: 'Tarefas de código com Claude e Codex' },
   video: { name: 'NIGHT Vídeo', title: 'Vídeos (parado por decisão do Joel)' },
+  design: { name: 'NIGHT Design', title: 'Landing pages e UI/UX do produto low-ticket' },
+  marketing: { name: 'NIGHT Marketing', title: 'Copy, ângulos e criativos de anúncio' },
 };
 const LIMITE_INSTRUCOES = 2000;
 
@@ -90,6 +92,6 @@ if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
   mkdirSync(pasta, { recursive: true });
   const destino = join(pasta, 'night-telas.zip');
   writeFileSync(destino, zipStored([{ name: 'openbot-import.json', data: Buffer.from(JSON.stringify(manifesto, null, 2), 'utf8') }]));
-  console.log(`Pacote das 6 telas: ${destino}`);
+  console.log(`Pacote das telas: ${destino}`);
   console.log('No OpenBot: Configurações do servidor → Importar → escolha esse arquivo.');
 }

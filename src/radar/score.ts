@@ -12,7 +12,8 @@
 //
 // Determinismo: nada de data/hora ou aleatoriedade; a mesma entrada devolve sempre a mesma saída.
 
-export const RUBRIC_VERSION = 'triagem/1';
+export const RUBRIC_VERSION = 'triagem/2';
+export const CORTE_TRIAGEM = 6;
 
 export type CriterioNome =
   | 'anunciosAtivos'
@@ -22,7 +23,7 @@ export type CriterioNome =
   | 'entregavelEmPdf';
 
 export interface ScoreInput {
-  /** Anúncios ativos no domínio. null/undefined = não visível. */
+  /** Anúncios ativos da página. null/undefined = não visível. */
   anunciosAtivos?: number | null;
   /** Dias no ar do anúncio mais antigo. null/undefined = não visível. */
   diasNoAr?: number | null;
@@ -122,7 +123,7 @@ function precoBr(valor: number): string {
 
 /** Texto do critério como no PDF; ausente vira "não visível", nunca número inventado. */
 const DESCREVE: Record<CriterioNome, (valor: number | boolean | null) => string> = {
-  anunciosAtivos: (v) => (v === null ? 'anúncios ativos não visível' : `${v} anúncios ativos`),
+  anunciosAtivos: (v) => (v === null ? 'anúncios ativos da página não visível' : `${v} anúncios ativos da página`),
   diasNoAr: (v) => (v === null ? 'dias no ar não visível' : `${v} dias no ar`),
   anunciantesNoNicho: (v) => (v === null ? 'anunciantes no nicho não visível' : `${v} anunciantes no nicho`),
   precoOrigem: (v) => (v === null ? 'origem não visível' : `origem ${precoBr(v as number)}`),
@@ -163,4 +164,11 @@ export function scoreCandidate(input: ScoreInput): ScoreResultado {
   const justificativa = `${soma} = ${nota}${parcial ? ` (parcial, máx. ${maximoPossivel})` : ''}. ${detalhe}.`;
 
   return { version: RUBRIC_VERSION, nota, maximoPossivel, parcial, faltando, criterios, justificativa };
+}
+
+/** Parcial só passa com os três critérios visíveis da busca da Meta. */
+export function acimaDoCorte(score: ScoreResultado): boolean {
+  if (!score.parcial) return score.nota >= CORTE_TRIAGEM;
+  if (score.maximoPossivel === 0 || score.nota / score.maximoPossivel < CORTE_TRIAGEM / 10) return false;
+  return score.faltando.every((nome) => nome === 'diasNoAr' || nome === 'precoOrigem');
 }

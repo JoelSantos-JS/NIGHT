@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { DEFAULT_DATABASE_URL, migrate } from '../memory/pg-memory.ts';
-import type { ScoreResultado } from './score.ts';
+import { acimaDoCorte, type ScoreResultado } from './score.ts';
 
 /** Trava só das ofertas: número novo e revisão não podem colidir. */
 const OFFER_LOCK = 0x5241444f;
@@ -259,6 +259,9 @@ export class PgRadarStore {
            raw              = $10,
            unknown_fields   = $11,
            job_id           = COALESCE($12, job_id),
+           -- Visto de novo com números novos (ativos da página, anunciantes): a nota velha não vale mais.
+           -- Recalcular é código puro, sem modelo.
+           score            = NULL,
            last_seen_at     = now()
          WHERE id = $1
          RETURNING ${CANDIDATE_COLS}`,
@@ -405,7 +408,7 @@ export class PgRadarStore {
 
   /**
    * Contadores da janela [from, to). Novos = primeira observação na janela; duplicados = candidato
-   * que já existia e voltou a ser visto; acimaDoCorte usa a nota de triagem (corte 7).
+   * que já existia e voltou a ser visto; acimaDoCorte usa a regra da triagem.
    * Discussão e decisão vêm do radar_feedback: aceitar/rejeitar são feedbacks, não status de anúncio.
    */
   async radarWeeklyCounts(from: string | Date, to: string | Date): Promise<RadarWeeklyCounts> {
@@ -419,9 +422,6 @@ export class PgRadarStore {
            WHERE first_seen_at < $1 AND last_seen_at >= $1 AND last_seen_at < $2) AS duplicados,
          (SELECT count(*)::int FROM radar_candidates
            WHERE last_seen_at >= $1 AND last_seen_at < $2 AND cardinality(unknown_fields) > 0) AS incompletos,
-         (SELECT count(*)::int FROM radar_candidates
-           WHERE last_seen_at >= $1 AND last_seen_at < $2
-             AND COALESCE((score->>'nota')::numeric, -1) >= 7) AS acima_do_corte,
          (SELECT count(*)::int FROM radar_offers
            WHERE version = 1 AND created_at >= $1 AND created_at < $2) AS propostas_criadas,
          (SELECT count(DISTINCT offer_number)::int FROM radar_feedback
@@ -433,12 +433,16 @@ export class PgRadarStore {
       [from, to],
     );
     const r = rows[0]!;
+    const scores = await this.pool.query(
+      'SELECT score FROM radar_candidates WHERE last_seen_at >= $1 AND last_seen_at < $2 AND score IS NOT NULL',
+      [from, to],
+    );
     return {
       candidatosVistos: r.candidatos_vistos,
       novos: r.novos,
       duplicados: r.duplicados,
       incompletos: r.incompletos,
-      acimaDoCorte: r.acima_do_corte,
+      acimaDoCorte: scores.rows.filter((row: Row) => acimaDoCorte(row.score as ScoreResultado)).length,
       propostasCriadas: r.propostas_criadas,
       discutidas: r.discutidas,
       aceitas: r.aceitas,

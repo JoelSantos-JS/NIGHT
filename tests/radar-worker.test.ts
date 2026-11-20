@@ -329,6 +329,30 @@ describe('trabalhador do Radar', () => {
     assert.equal(diasNoAr?.pontos, null);
   });
 
+  test('busca por nicho entra com nota parcial 6 e usa uma sessão', async () => {
+    const jobId = await novoJob();
+    let scans = 0;
+    const source: AdSource = {
+      name: 'nicho-falso',
+      search: async () => { throw new Error('busca antiga não deve rodar'); },
+      nicheScan: async () => {
+        scans++;
+        return { ads: [{ externalId: 'page:123:organização em casa', advertiser: 'Página',
+          activeAdsInDomain: 90, anunciantesNoNicho: 4, entregavelEmPdf: true,
+          titulos: ['Planilha'], country: 'BR' }], observacoes: [] };
+      },
+    };
+    const worker = new RadarWorker({ store, artifacts, source, generator: null });
+    const { result } = await rodar(worker, pedido(jobId));
+    assert.equal(scans, 1);
+    assert.equal(result.state, 'waiting');
+    assert.equal(result.waitingFor, 'gerador');
+    const relatorio = await lerRelatorio(jobId);
+    assert.equal(relatorio.candidatosPontuados[0]?.nota, 6);
+    assert.equal(relatorio.candidatosPontuados[0]?.parcial, true);
+    assert.match(relatorio.candidatosPontuados[0]!.justificativa, /^3\+\?\+2\+\?\+1 = 6/);
+  });
+
   test('nenhum candidato acima do corte: sucesso com relatório e sem gerador chamado', async () => {
     const jobId = await novoJob();
     const source = new FakeSource([[BAIXA]]);

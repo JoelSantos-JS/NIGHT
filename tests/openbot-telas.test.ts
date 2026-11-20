@@ -7,10 +7,11 @@ import { TELAS } from '../src/app/server.ts';
 
 const ler = (t: string) => readFileSync(join(import.meta.dirname, '..', 'openbot', 'telas', `${t}.md`), 'utf8');
 
-test('manifesto do OpenBot: 6 telas com chave válida e instruções dentro do limite', () => {
+test('manifesto do OpenBot: 8 telas com chave válida e instruções dentro do limite', () => {
   const m = buildImportManifest(ler) as { format: string; version: number; agents: { key: string; name: string; description: string }[] };
   assert.equal(m.format, 'openbot-agent-import');
   assert.equal(m.version, 1);
+  assert.equal(m.agents.length, 8);
   assert.deepEqual(m.agents.map((a) => a.key), [...TELAS]);
   for (const a of m.agents) {
     assert.match(a.key, /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
@@ -18,6 +19,15 @@ test('manifesto do OpenBot: 6 telas com chave válida e instruções dentro do l
     assert.ok(a.description.length <= 2000, `${a.key}: ${a.description.length}`);
     assert.match(a.description, new RegExp(`tela: "${a.key}"`), 'cada tela se identifica certo no night_pedir');
     assert.match(a.description, /Nunca escreva "aprovo"/);
+  }
+});
+
+test('design e marketing: até 2.000 caracteres e relatam na própria tela', () => {
+  for (const tela of ['design', 'marketing'] as const) {
+    const texto = ler(tela);
+    assert.ok(texto.length <= 2000, `${tela}: ${texto.length}`);
+    assert.match(texto, /night_relatar/, `${tela} registra a etapa no night_relatar`);
+    assert.match(texto, new RegExp(`night_relatar[^]*tela: "${tela}"`), `${tela} relata com a própria tela`);
   }
 });
 

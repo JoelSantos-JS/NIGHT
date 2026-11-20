@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { RUBRIC_VERSION, scoreCandidate, type CriterioNome, type ScoreInput } from '../src/radar/score.ts';
+import { RUBRIC_VERSION, acimaDoCorte, scoreCandidate, type CriterioNome, type ScoreInput } from '../src/radar/score.ts';
+
+test('corte único aceita 3+?+2+?+1 e recusa outro critério ausente', () => {
+  const parcial = scoreCandidate({ anunciosAtivos: 90, anunciantesNoNicho: 4, entregavelEmPdf: true });
+  assert.equal(parcial.version, 'triagem/2');
+  assert.equal(parcial.justificativa.startsWith('3+?+2+?+1 = 6 (parcial, máx. 6).'), true);
+  assert.equal(acimaDoCorte(parcial), true);
+  assert.equal(acimaDoCorte(scoreCandidate({ anunciosAtivos: 90, entregavelEmPdf: true })), false);
+});
 
 const COMPLETO: ScoreInput = { anunciosAtivos: 94, diasNoAr: 41, anunciantesNoNicho: 5, precoOrigem: 97, entregavelEmPdf: true };
 
@@ -14,7 +22,7 @@ function pontos(nome: CriterioNome, valor: number | boolean): number | null {
 describe('nota de triagem do Radar', () => {
   test('exemplo do PDF: 94, 41, 5, R$97, PDF = 10', () => {
     assert.deepEqual(scoreCandidate(COMPLETO), {
-      version: 'triagem/1',
+      version: 'triagem/2',
       nota: 10,
       maximoPossivel: 10,
       parcial: false,
@@ -27,9 +35,9 @@ describe('nota de triagem do Radar', () => {
         { nome: 'entregavelEmPdf', valor: true, pontos: 1, maximo: 1 },
       ],
       justificativa:
-        '3+2+2+2+1 = 10. 94 anúncios ativos, 41 dias no ar, 5 anunciantes no nicho, origem R$97, entregável em PDF.',
+        '3+2+2+2+1 = 10. 94 anúncios ativos da página, 41 dias no ar, 5 anunciantes no nicho, origem R$97, entregável em PDF.',
     });
-    assert.equal(RUBRIC_VERSION, 'triagem/1');
+    assert.equal(RUBRIC_VERSION, 'triagem/2');
   });
 
   test('bordas de anúncios ativos: 10/11, 30/31, 80/81', () => {
@@ -81,13 +89,13 @@ describe('nota de triagem do Radar', () => {
     assert.deepEqual(r.criterios[1], { nome: 'diasNoAr', valor: null, pontos: null, maximo: 2 });
     assert.equal(
       r.justificativa,
-      '3+?+2+2+1 = 8 (parcial, máx. 8). 94 anúncios ativos, dias no ar não visível, 5 anunciantes no nicho, origem R$97, entregável em PDF.',
+      '3+?+2+2+1 = 8 (parcial, máx. 8). 94 anúncios ativos da página, dias no ar não visível, 5 anunciantes no nicho, origem R$97, entregável em PDF.',
     );
   });
 
   test('undefined conta como ausente, igual a null', () => {
     assert.deepEqual(scoreCandidate({}), {
-      version: 'triagem/1',
+      version: 'triagem/2',
       nota: 0,
       maximoPossivel: 0,
       parcial: true,
@@ -100,7 +108,7 @@ describe('nota de triagem do Radar', () => {
         { nome: 'entregavelEmPdf', valor: null, pontos: null, maximo: 1 },
       ],
       justificativa:
-        '?+?+?+?+? = 0 (parcial, máx. 0). anúncios ativos não visível, dias no ar não visível, anunciantes no nicho não visível, origem não visível, entregável não visível.',
+        '?+?+?+?+? = 0 (parcial, máx. 0). anúncios ativos da página não visível, dias no ar não visível, anunciantes no nicho não visível, origem não visível, entregável não visível.',
     });
     assert.deepEqual(scoreCandidate({}), scoreCandidate({ anunciosAtivos: null, diasNoAr: null, anunciantesNoNicho: null, precoOrigem: null, entregavelEmPdf: null }));
   });

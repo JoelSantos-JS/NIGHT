@@ -23,17 +23,15 @@ import type { NichoPlanejado, PlanejadorNichos } from './nichos.ts';
 import type { ProposalGenerator } from './pipeline.ts';
 import { proposeOffer } from './pipeline.ts';
 import type { ScoreInput, ScoreResultado } from './score.ts';
-import { scoreCandidate } from './score.ts';
+import { acimaDoCorte, scoreCandidate } from './score.ts';
 import type { NewCandidate, PgRadarStore, RadarCandidate } from './store.ts';
 
 /** Nome do relatório que também serve de estado para a retomada. */
 export const RELATORIO_RADAR = 'relatorio-radar.json';
 const RELATORIO_VERSION = 'relatorio-radar/1';
 
-/** Corte da triagem: abaixo de 7 o candidato não vira oferta. */
-const CORTE = 7;
-/** Teto de candidatos escolhidos por execução (as ofertas juntam candidatos do mesmo domínio). */
-const MAX_ESCOLHIDOS = 3;
+/** Teto de ofertas por execução (as ofertas juntam candidatos do mesmo domínio). */
+export const MAX_OFERTAS_RADAR = 15;
 const MAX_POR_PALAVRA = 50;
 const MAX_PAGINAS = 5;
 
@@ -380,6 +378,8 @@ export class RadarWorker implements JobWorker {
       const maxPages = comNichos ? 1 : tetoDoPedido(request.limits.maxPages, MAX_PAGINAS);
       const novasContas = await collect(this.coletorQueLembra(ids), source, {
         jobId: request.jobId, keywords, maxPerKeyword, maxPages,
+        // Até 20 avisos da busca: o suficiente para entender por que vieram menos candidatos.
+        onAviso: (texto) => { if (avisos.length < 20) avisos.push(texto); },
       });
       coleta = acumular(coleta, novasContas);
       await this.salvarRelatorio(request.jobId, this.montarRelatorio({
@@ -416,18 +416,11 @@ export class RadarWorker implements JobWorker {
 
       if (await this.parar(run)) return;
 
-      // (4) Escolhe até 3 acima do corte. Parcial só entra se o máximo visível ainda
-      // sustentar o corte, e sempre com aviso para o Joel.
+      // (4) Parcial só entra com os critérios observáveis da Meta.
       const escolhidos = pontuados
-        .filter((p) => p.nota >= CORTE)
+        .filter((p) => acimaDoCorte(notas.get(p.id)!))
         .sort((a, b) => b.nota - a.nota || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-        .filter((p) => {
-          const nota = notas.get(p.id);
-          if (!nota) return false;
-          // Parcial precisa que o que já foi visto sustente o corte; senão, fica de fora.
-          return !nota.parcial || nota.maximoPossivel >= CORTE;
-        })
-        .slice(0, MAX_ESCOLHIDOS);
+        .slice(0, MAX_OFERTAS_RADAR);
 
       for (const p of escolhidos) {
         const nota = notas.get(p.id);

@@ -158,7 +158,18 @@ describe('Radar: base e coleta', () => {
 
     const lido = await store.getCandidate(candidate.id);
     assert.equal(lido?.score?.nota, 10);
-    assert.equal(lido?.score?.version, 'triagem/1');
+    assert.equal(lido?.score?.version, 'triagem/2');
+  });
+
+  test('acimaDoCorte semanal usa a mesma regra do worker', async () => {
+    const jobId = await novoJob();
+    const passa = await store.upsertCandidate(baseCandidate('parcial-passa', { jobId }));
+    const falta = await store.upsertCandidate(baseCandidate('parcial-falta', { jobId }));
+    await store.setScore(passa.candidate.id, scoreCandidate({ anunciosAtivos: 90, anunciantesNoNicho: 4, entregavelEmPdf: true }));
+    await store.setScore(falta.candidate.id, scoreCandidate({ anunciosAtivos: 90, entregavelEmPdf: true }));
+    const now = Date.now();
+    const counts = await store.radarWeeklyCounts(new Date(now - 86_400_000), new Date(now + 86_400_000));
+    assert.equal(counts.acimaDoCorte, 1);
   });
 
   test('coleta pagina e conta vistos, novos, duplicados e incompletos', async () => {
