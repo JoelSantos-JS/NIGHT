@@ -20,6 +20,7 @@ import { WORKER_CONTRACT } from '../src/jobs/worker.ts';
 import type { WorkerRequest } from '../src/jobs/worker.ts';
 import { PgMemory } from '../src/memory/pg-memory.ts';
 import type { AdSource, RawAd } from '../src/radar/collect.ts';
+import type { PlanejadorNichos } from '../src/radar/nichos.ts';
 import { PROPOSAL_VERSION } from '../src/radar/offer.ts';
 import type { ProposalMessage } from '../src/radar/offer.ts';
 import type { ProposalGenerator } from '../src/radar/pipeline.ts';
@@ -365,6 +366,74 @@ describe('trabalhador do Radar', () => {
     assert.deepEqual(relatorio.ofertas, []);
     assert.equal(await store.countCandidates(), 1);
     assert.equal(await store.getOffer(1), null);
+  });
+
+  test('planejamento junta termos, registra avisos e limita a coleta', async () => {
+    const jobId = await novoJob();
+    const source = new FakeSource([[], [ALTA]]);
+    let chamadas = 0;
+    const planejador: PlanejadorNichos = {
+      async planejar(query, max) {
+        chamadas += 1;
+        assert.equal(query, 'organização em casa');
+        assert.equal(max, 8);
+        return {
+          autor: 'codex:teste', avisos: ['pesquisa parcial'],
+          nichos: [
+            { tipo: 'nicho', nome: 'Agendas', termo: 'agenda semanal', motivo: 'demanda', fontes: ['https://example.com/1'] },
+            { tipo: 'oferta', nome: 'Rotinas', termo: 'rotina doméstica', motivo: 'demanda', fontes: ['https://example.com/2'] },
+          ],
+        };
+      },
+    };
+    const frases = Array.from({ length: 8 }, (_, i) => `frase ${i + 1}`);
+    const request = pedido(jobId, { keywords: frases, planejarNichos: true });
+    const worker = new RadarWorker({ store, artifacts, source, generator: null, planejador });
+    const primeira = await rodar(worker, request);
+    assert.equal(primeira.result.state, 'succeeded');
+    assert.equal(chamadas, 1);
+    // Com nichos, o Claude busca só os termos deles; as frases de preço ficam de reserva.
+    assert.deepEqual(source.calls.map((call) => call.keyword), ['agenda semanal', 'rotina doméstica']);
+    assert.ok(source.calls.every((call) => call.limit === 8 && call.cursor === null), 'teto de 15 por dia: 2 termos, 8 cada, 1 página');
+    const relatorio = await lerRelatorio(jobId);
+    assert.deepEqual(relatorio.keywords, ['agenda semanal', 'rotina doméstica']);
+    assert.deepEqual(relatorio.nichos?.map((nicho) => nicho.nome), ['Agendas', 'Rotinas']);
+    assert.ok(relatorio.avisos.includes('Nichos (codex:teste): Agendas, Rotinas'));
+    assert.ok(relatorio.avisos.includes('pesquisa parcial'));
+
+    const retomada = new RadarWorker({ store, artifacts, source: new FakeSource([[]]), generator: null, planejador });
+    const segunda = await rodar(retomada, request);
+    assert.equal(segunda.result.state, 'succeeded');
+    assert.equal(chamadas, 1, 'o relatório guarda o plano para a retomada');
+  });
+
+  test('plano vazio usa só as frases e preserva os avisos', async () => {
+    const jobId = await novoJob();
+    const source = new FakeSource([[]]);
+    const planejador: PlanejadorNichos = {
+      async planejar() { return { autor: 'nenhum', nichos: [], avisos: ['sem fonte'] }; },
+    };
+    const worker = new RadarWorker({ store, artifacts, source, generator: null, planejador });
+    const { result } = await rodar(worker, pedido(jobId, { keywords: ['frase'], planejarNichos: true }));
+    assert.equal(result.state, 'succeeded');
+    assert.deepEqual(source.calls.map((call) => call.keyword), ['frase']);
+    const relatorio = await lerRelatorio(jobId);
+    assert.deepEqual(relatorio.nichos, []);
+    assert.ok(relatorio.avisos.includes('sem fonte'));
+    assert.ok(relatorio.avisos.includes('Nichos (nenhum): '));
+  });
+
+  test('sem planejador mantém os limites e as palavras do pedido', async () => {
+    const jobId = await novoJob();
+    const source = new FakeSource([[], []]);
+    const worker = new RadarWorker({ store, artifacts, source, generator: null });
+    const { result } = await rodar(worker, pedido(jobId, { keywords: ['frase'], planejarNichos: true }));
+    assert.equal(result.state, 'succeeded');
+    // Caminho de sempre: teto padrão (50) e a coleta para na primeira página vazia.
+    assert.deepEqual(source.calls.map((call) => [call.keyword, call.cursor, call.limit]), [['frase', null, 50]]);
+    const relatorio = await lerRelatorio(jobId);
+    assert.equal(relatorio.nichos, undefined);
+    assert.deepEqual(relatorio.avisos, []);
   });
 
   test('retomada não duplica oferta nem candidato', async () => {

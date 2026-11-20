@@ -20,6 +20,7 @@ import { JobRunner } from '../jobs/runner.ts';
 import { OllamaLlm } from '../local-llm/ollama.ts';
 import { PgMemory } from '../memory/pg-memory.ts';
 import { PgRadarStore } from '../radar/store.ts';
+import { PlanejadorComPesquisa } from '../radar/nichos.ts';
 import { RadarWorker } from '../radar/worker.ts';
 import { NightRouter } from '../router/router.ts';
 import { VideoAgent, VoiceUnavailableError, type ImageProvider } from '../video/agent.ts';
@@ -195,6 +196,7 @@ export async function createNight(opts: CreateNightOptions = {}) {
     const radar = new RadarWorker({
       store: radarStore,
       artifacts,
+      planejador: new PlanejadorComPesquisa(researchers),
       source: metaReadTools.length
         ? new MetaMcpAdSource({ readTools: metaReadTools, workDir: join(paths.data, 'meta-mcp') })
         : null,

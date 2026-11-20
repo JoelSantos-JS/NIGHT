@@ -394,7 +394,7 @@ export class NightCoordinator {
       case 'cancel': out = await this.cancel(intent, language); break;
       case 'approval': out = await this.approval(intent, language); break;
       case 'radar-search': out = await this.createWork('radar', text, LOW_TICKET.test(intent.query)
-        ? { query: intent.query, keywords: PALAVRAS_LOW_TICKET } : { query: intent.query }, language); break;
+        ? { query: intent.query, keywords: PALAVRAS_LOW_TICKET, planejarNichos: true } : { query: intent.query }, language); break;
       case 'video-create': out = await this.createWork('video', text, { topic: intent.topic }, language); break;
       case 'job-status': ({ text: out, detail } = await this.jobStatus(intent, language)); break;
       case 'job-cancel': out = await this.cancelJob(intent, language); break;

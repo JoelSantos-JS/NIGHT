@@ -19,6 +19,7 @@ import type { JobWorker, WorkerRequest, WorkerResult, WorkerState } from '../job
 import { WORKER_CONTRACT } from '../jobs/worker.ts';
 import type { AdSource, CollectCounters, CollectStore } from './collect.ts';
 import { collect } from './collect.ts';
+import type { NichoPlanejado, PlanejadorNichos } from './nichos.ts';
 import type { ProposalGenerator } from './pipeline.ts';
 import { proposeOffer } from './pipeline.ts';
 import type { ScoreInput, ScoreResultado } from './score.ts';
@@ -60,6 +61,7 @@ export interface RelatorioRadar {
   jobId: string;
   query: string;
   keywords: string[];
+  nichos?: NichoPlanejado[];
   coleta: Record<string, CollectCounters>;
   totais: CollectCounters;
   candidatosColetados: string[];
@@ -77,6 +79,7 @@ export interface RadarWorkerDeps {
   generator: ProposalGenerator | null;
   /** Parecer independente da proposta; sem ele a oferta nasce como rascunho, sem aprovação. */
   advisor?: AdvisorService;
+  planejador?: PlanejadorNichos;
   /** Teto de chamadas do trabalho; a fábrica recebe o pedido para montar o tracker. */
   limits?: (request: WorkerRequest) => LimitTracker;
 }
@@ -191,7 +194,20 @@ function totaisDe(coleta: Record<string, CollectCounters>): CollectCounters {
 /** Relatório lido do store é estado de retomada: só a versão conhecida é aceita. */
 function lerRelatorioBruto(raw: unknown): Partial<RelatorioRadar> | null {
   if (!isRecord(raw) || raw.version !== RELATORIO_VERSION) return null;
-  return raw as Partial<RelatorioRadar>;
+  const relatorio = { ...raw } as Partial<RelatorioRadar>;
+  if (!nichosValidos(raw.nichos)) delete relatorio.nichos;
+  return relatorio;
+}
+
+function nichosValidos(value: unknown): value is NichoPlanejado[] {
+  return Array.isArray(value) && value.every((item) =>
+    isRecord(item)
+    && (item.tipo === 'nicho' || item.tipo === 'oferta')
+    && typeof item.nome === 'string' && item.nome.trim() !== ''
+    && typeof item.termo === 'string' && item.termo.trim() !== ''
+    && typeof item.motivo === 'string'
+    && Array.isArray(item.fontes)
+    && item.fontes.every((fonte: unknown) => typeof fonte === 'string'));
 }
 
 function listaDeTexto(value: unknown): string[] {
@@ -229,6 +245,7 @@ export class RadarWorker implements JobWorker {
   private readonly source: AdSource | null;
   private readonly generator: ProposalGenerator | null;
   private readonly advisor: AdvisorService | null;
+  private readonly planejador: PlanejadorNichos | null;
   private readonly limits: ((request: WorkerRequest) => LimitTracker) | null;
 
   /** runId da execução mais recente por jobId; ver start() para quando ele muda. */
@@ -243,6 +260,7 @@ export class RadarWorker implements JobWorker {
     this.source = deps.source;
     this.generator = deps.generator;
     this.advisor = deps.advisor ?? null;
+    this.planejador = deps.planejador ?? null;
     this.limits = deps.limits ?? null;
   }
 
@@ -316,7 +334,7 @@ export class RadarWorker implements JobWorker {
         await this.finish(run, 'failed', 'pedido sem nicho (params.query)', 'pedido sem nicho (params.query)');
         return;
       }
-      const keywords = keywordsDoPedido(request.params.keywords, query);
+      let keywords = keywordsDoPedido(request.params.keywords, query);
 
       // (1) Fonte não provada: esperar é honesto; coletar seria inventar anúncio.
       if (this.source === null) {
@@ -331,19 +349,41 @@ export class RadarWorker implements JobWorker {
       const ofertas = ofertasDe(anterior?.ofertas);
       const avisos = [...listaDeTexto(anterior?.avisos)];
       let coleta = coletaDe(anterior?.coleta);
+      let nichos: NichoPlanejado[] | undefined;
+
+      if (request.params.planejarNichos === true && this.planejador !== null) {
+        if (anterior?.nichos !== undefined) {
+          nichos = anterior.nichos;
+          if (!avisos.some((aviso) => aviso.startsWith('Nichos ('))) {
+            avisos.push(`Nichos (retomada): ${nichos.map((nicho) => nicho.nome).join(', ')}`);
+          }
+        } else {
+          run.message = 'o Codex está pesquisando os nichos';
+          const plano = await this.planejador.planejar(query, 8);
+          nichos = plano.nichos;
+          avisos.push(...plano.avisos);
+          avisos.push(`Nichos (${plano.autor}): ${nichos.map((nicho) => nicho.nome).join(', ')}`);
+        }
+        // O Claude busca na Biblioteca o que o Codex achou; as frases de preço do pedido ficam de reserva (sem nicho,
+        // são elas que vão). Assim são até 8 buscas, não 16: cada uma é uma sessão do Claude (~1,5 min).
+        if (nichos.length > 0) keywords = [...new Set(nichos.map((nicho) => nicho.termo))];
+        if (await this.parar(run)) return;
+      }
 
       if (await this.parar(run)) return;
 
       // (2) Coleta: continua do cursor; o wrapper lembra os ids vistos nesta execução.
       run.message = 'coletando anúncios';
-      const maxPerKeyword = tetoDoPedido(request.limits.maxPerKeyword, MAX_POR_PALAVRA);
-      const maxPages = tetoDoPedido(request.limits.maxPages, MAX_PAGINAS);
+      const comNichos = request.params.planejarNichos === true && this.planejador !== null;
+      const maxPerKeyword = tetoDoPedido(request.limits.maxPerKeyword,
+        comNichos ? Math.max(1, Math.ceil(15 / keywords.length)) : MAX_POR_PALAVRA);
+      const maxPages = comNichos ? 1 : tetoDoPedido(request.limits.maxPages, MAX_PAGINAS);
       const novasContas = await collect(this.coletorQueLembra(ids), source, {
         jobId: request.jobId, keywords, maxPerKeyword, maxPages,
       });
       coleta = acumular(coleta, novasContas);
       await this.salvarRelatorio(request.jobId, this.montarRelatorio({
-        jobId: request.jobId, query, keywords, coleta, ids, pontuados: [], ofertas, avisos,
+        jobId: request.jobId, query, keywords, nichos, coleta, ids, pontuados: [], ofertas, avisos,
       }));
 
       if (await this.parar(run)) return;
@@ -371,7 +411,7 @@ export class RadarWorker implements JobWorker {
         if (await this.parar(run)) return;
       }
       await this.salvarRelatorio(request.jobId, this.montarRelatorio({
-        jobId: request.jobId, query, keywords, coleta, ids, pontuados, ofertas, avisos,
+        jobId: request.jobId, query, keywords, nichos, coleta, ids, pontuados, ofertas, avisos,
       }));
 
       if (await this.parar(run)) return;
@@ -402,7 +442,7 @@ export class RadarWorker implements JobWorker {
       if (escolhidos.length === 0) {
         const mensagem = 'nenhum candidato acima do corte';
         await this.salvarRelatorio(request.jobId, this.montarRelatorio({
-          jobId: request.jobId, query, keywords, coleta, ids, pontuados, ofertas, avisos,
+          jobId: request.jobId, query, keywords, nichos, coleta, ids, pontuados, ofertas, avisos,
         }));
         await this.finish(run, 'succeeded', mensagem, null);
         return;
@@ -411,7 +451,7 @@ export class RadarWorker implements JobWorker {
       // (5) Sem gerador o trabalho espera; coleta e notas ficam prontas para a retomada.
       if (this.generator === null) {
         await this.salvarRelatorio(request.jobId, this.montarRelatorio({
-          jobId: request.jobId, query, keywords, coleta, ids, pontuados, ofertas, avisos,
+          jobId: request.jobId, query, keywords, nichos, coleta, ids, pontuados, ofertas, avisos,
         }));
         await this.finish(
           run, 'waiting', 'coleta e notas prontas; falta o gerador de propostas', null, 'gerador',
@@ -450,7 +490,7 @@ export class RadarWorker implements JobWorker {
           avisos.push(`proposta inválida para o grupo ${grupo}: ${detalhe}`);
         }
         await this.salvarRelatorio(request.jobId, this.montarRelatorio({
-          jobId: request.jobId, query, keywords, coleta, ids, pontuados, ofertas, avisos,
+          jobId: request.jobId, query, keywords, nichos, coleta, ids, pontuados, ofertas, avisos,
         }));
 
         if (await this.parar(run)) return;
@@ -458,7 +498,7 @@ export class RadarWorker implements JobWorker {
 
       // (6) Relatório final com coleta, notas e ofertas; o artefato também é o estado da retomada.
       await this.salvarRelatorio(request.jobId, this.montarRelatorio({
-        jobId: request.jobId, query, keywords, coleta, ids, pontuados, ofertas, avisos,
+        jobId: request.jobId, query, keywords, nichos, coleta, ids, pontuados, ofertas, avisos,
       }));
       const mensagem = `relatório pronto: ${pontuados.length} candidato(s) pontuado(s), ${ofertas.length} oferta(s)`;
       await this.finish(run, 'succeeded', mensagem, null);
@@ -519,6 +559,7 @@ export class RadarWorker implements JobWorker {
     jobId: string;
     query: string;
     keywords: string[];
+    nichos?: NichoPlanejado[];
     coleta: Record<string, CollectCounters>;
     ids: Set<string>;
     pontuados: CandidatoPontuado[];
@@ -530,6 +571,7 @@ export class RadarWorker implements JobWorker {
       jobId: input.jobId,
       query: input.query,
       keywords: input.keywords,
+      ...(input.nichos !== undefined ? { nichos: input.nichos } : {}),
       coleta: input.coleta,
       totais: totaisDe(input.coleta),
       candidatosColetados: [...input.ids],

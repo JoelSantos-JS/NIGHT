@@ -162,7 +162,7 @@ describe('NightCoordinator', () => {
   test('Radar de low-ticket varre as frases do método, não a palavra "low ticket"', async () => {
     await night.handle('vasculha ofertas de low ticket');
     const [radar] = await mem.listJobs({ kind: 'radar' });
-    assert.deepEqual(radar!.params, { query: 'low ticket', keywords: PALAVRAS_LOW_TICKET });
+    assert.deepEqual(radar!.params, { query: 'low ticket', keywords: PALAVRAS_LOW_TICKET, planejarNichos: true });
     assert.ok(PALAVRAS_LOW_TICKET.includes('acesso vitalício'));
   });
 
