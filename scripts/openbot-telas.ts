@@ -21,6 +21,7 @@ const NOMES: Record<Tela, { name: string; title: string }> = {
   video: { name: 'NIGHT Vídeo', title: 'Vídeos (parado por decisão do Joel)' },
   design: { name: 'NIGHT Design', title: 'Landing pages e UI/UX do produto low-ticket' },
   marketing: { name: 'NIGHT Marketing', title: 'Copy, ângulos e criativos de anúncio' },
+  executor: { name: 'NIGHT Executor', title: 'Faz junto com o NIGHT cada pedido de trabalho' },
 };
 const LIMITE_INSTRUCOES = 2000;
 

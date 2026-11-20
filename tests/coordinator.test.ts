@@ -933,6 +933,36 @@ describe('ligação com o OpenBot pelo coordenador', () => {
     assert.equal(r.text, 'resumo do OpenBot');
   });
 
+  test('g) pedido de trabalho do dono e da voz vai também para o executor; de tela, conversa e decisão não', async () => {
+    const comExecutor = (openbot: OpenBotLike) => {
+      const llm = new FakeLlm(() => 'resposta do modelo local');
+      return new NightCoordinator(memoriaFalsa(), new NightRouter(llm, async () => []), llm, { openbot, openbotExecutor: 'NIGHT Executor' });
+    };
+    const pesquisa = 'pesquisa pra mim a cotação do dólar hoje';
+    for (const origem of ['dono', 'voz'] as const) {
+      const openbot = new OpenBotFalso();
+      const r = await comExecutor(openbot).handle(pesquisa, undefined, { origem });
+      assert.equal(r.intent, 'research', origem);
+      await r.followUp;
+      assert.equal(openbot.enviados.length, 1, origem);
+      assert.equal(openbot.enviados[0]!.agente, 'NIGHT Executor');
+      assert.match(openbot.enviados[0]!.tarefa, /^Pedido do Joel ao NIGHT .*: pesquisa pra mim a cotação do dólar hoje$/);
+    }
+    const daTela = new OpenBotFalso();
+    await (await comExecutor(daTela).handle(pesquisa, undefined, { origem: 'tela' })).followUp;
+    assert.equal(daTela.enviados.length, 0, 'de tela não volta para o OpenBot');
+    const conversa = new OpenBotFalso();
+    await comExecutor(conversa).handle('bom dia', undefined, { origem: 'dono' });
+    await comExecutor(conversa).handle('o que o openbot fez?', undefined, { origem: 'dono' });
+    assert.equal(conversa.enviados.length, 0, 'conversa e status ficam só no NIGHT');
+    // "off" desliga.
+    const desligado = new OpenBotFalso();
+    const llm = new FakeLlm(() => 'ok');
+    await (await new NightCoordinator(memoriaFalsa(), new NightRouter(llm, async () => []), llm, { openbot: desligado, openbotExecutor: 'off' })
+      .handle(pesquisa)).followUp;
+    assert.equal(desligado.enviados.length, 0);
+  });
+
   test('f) sem a opção openbot, a ligação não está ligada', async () => {
     const r = await montar().handle(frase);
     assert.equal(r.text, 'A ligação com o OpenBot não está ligada neste NIGHT.');

@@ -171,7 +171,7 @@ describe('servidor das telas e painel', () => {
   test('api/estado: agentes, decisões e conexões', async () => {
     jobs = [job({ kind: 'radar', number: 4, status: 'waiting', waitingFor: 'fonte' })];
     const e = JSON.parse((await http(server.port, 'GET', '/api/estado')).body);
-    assert.deepEqual(e.agentes.map((a: { nome: string }) => a.nome), ['NIGHT', 'Radar', 'Produto', 'Campanha', 'Código', 'Vídeo', 'Design', 'Marketing']);
+    assert.deepEqual(e.agentes.map((a: { nome: string }) => a.nome), ['NIGHT', 'Radar', 'Produto', 'Campanha', 'Código', 'Vídeo', 'Design', 'Marketing', 'Executor']);
     const radar = e.agentes.find((a: { tela: string }) => a.tela === 'radar');
     assert.equal(radar.resumo, '1 esperando');
     assert.deepEqual(radar.linhas, ['Radar 4: waiting (esperando: fonte)', '2 oferta(s), 1 aprovada(s)']);

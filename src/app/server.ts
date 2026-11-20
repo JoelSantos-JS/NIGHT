@@ -21,12 +21,12 @@ import { VozAoVivo, type RespostaNight, type RpcCliente } from './voz-ao-vivo.ts
 import type { EstadoOpenBot } from '../openbot/tipos.ts';
 
 /** Uma tela por agente no OpenBot; cada uma tem a sua conversa no NIGHT. */
-export const TELAS = ['night', 'radar', 'produto', 'campanha', 'codigo', 'video', 'design', 'marketing'] as const;
+export const TELAS = ['night', 'radar', 'produto', 'campanha', 'codigo', 'video', 'design', 'marketing', 'executor'] as const;
 export type Tela = (typeof TELAS)[number];
 
 const NOME_TELA: Record<Tela, string> = {
   night: 'NIGHT', radar: 'Radar', produto: 'Produto', campanha: 'Campanha', codigo: 'Código', video: 'Vídeo',
-  design: 'Design', marketing: 'Marketing',
+  design: 'Design', marketing: 'Marketing', executor: 'Executor',
 };
 
 const FOCO_TELA: Record<Tela, string> = {
@@ -38,11 +38,12 @@ const FOCO_TELA: Record<Tela, string> = {
   video: 'Vídeos (parado por decisão do Joel).',
   design: 'Página de vendas e telas do produto low-ticket.',
   marketing: 'Copy, ângulos e criativos de anúncio.',
+  executor: 'Faz junto com o NIGHT cada pedido de trabalho (pesquisa, Radar, código).',
 };
 
 const FOCO_CURTO: Record<Tela, string> = {
   night: 'Conversa e pesquisa', radar: 'Ofertas', produto: 'Low-ticket', campanha: 'Meta Ads', codigo: 'Claude e Codex', video: 'Parado',
-  design: 'Landing page', marketing: 'Copy e criativos',
+  design: 'Landing page', marketing: 'Copy e criativos', executor: 'Segunda frente',
 };
 
 const EXEMPLOS_TELA: Record<Tela, string[]> = {
@@ -54,6 +55,7 @@ const EXEMPLOS_TELA: Record<Tela, string[]> = {
   video: ['Cria um vídeo sobre café gelado', 'Como está o vídeo 1?'],
   design: ['Faz a página de vendas da oferta 1', 'Mostra no celular'],
   marketing: ['Me dá 5 ângulos para a oferta 1', 'Faz os prompts dos criativos'],
+  executor: ['Pesquisa produtos de lowticket', 'Pesquisa pra mim a cotação do dólar hoje'],
 };
 
 /** Que trabalhos cada tela acompanha ('night' vê todos). */
@@ -62,6 +64,8 @@ const KINDS_TELA: Record<Tela, JobKind[]> = {
   radar: ['radar'], produto: ['lowticket'], campanha: ['campanha'], video: ['video'], codigo: ['coding'],
   // Design e Marketing trabalham dentro do OpenBot; acompanham o produto low-ticket que estão montando.
   design: ['lowticket'], marketing: ['lowticket'],
+  // O executor recebe cópia dos pedidos de trabalho do Joel (Radar e código).
+  executor: ['radar', 'coding'],
 };
 
 export const DEFAULT_PORT = 4517;

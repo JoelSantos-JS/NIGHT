@@ -179,6 +179,11 @@ const splitSentences = (t: string) => t.split(/(?<=[.!?])\s+/).map((s) => s.trim
 export interface CoordinatorOptions {
   /** Agentes do OpenBot pela API local de automação ("manda pro Radar do OpenBot …"). */
   openbot?: OpenBotLike;
+  /**
+   * Agente do OpenBot que recebe uma cópia de cada pedido de trabalho do Joel (pedido dele, 20/11). Padrão:
+   * NIGHT_OPENBOT_EXECUTOR ou "NIGHT Executor"; null ou "off" desliga.
+   */
+  openbotExecutor?: string | null;
   /** Em ordem de preferência; o próximo só entra se o anterior falhar ou estiver no limite. */
   researchers?: ResearchAgent[];
   /** Executor das tarefas de código; sem ele, pedido de código só fica registrado. */
@@ -232,6 +237,12 @@ export interface HandleOptions {
   /** Link do painel de decisões, mostrado quando uma tela pede uma decisão. */
   painelUrl?: string;
 }
+
+/**
+ * Pedidos de trabalho que também vão para o executor do OpenBot (Joel, 20/11). Conversa, status, decisões, rodar
+ * projeto, campanha (dinheiro) e vídeo (parado) ficam só no NIGHT.
+ */
+const ESPELHO_EXECUTOR: ReadonlySet<Intent['kind']> = new Set(['research', 'radar-search', 'coding-task']);
 
 /** Intenções que são decisão do dono: nunca executam vindas de tela (só pela voz, terminal ou painel). */
 const DECISOES: ReadonlySet<Intent['kind']> = new Set([
@@ -303,9 +314,13 @@ export class NightCoordinator {
     this.campaignReader = opts.campaignReader;
     this.restoreRecent = opts.restoreRecent ?? true;
     this.openbot = opts.openbot;
+    const executor = opts.openbotExecutor !== undefined ? opts.openbotExecutor : (process.env.NIGHT_OPENBOT_EXECUTOR ?? 'NIGHT Executor');
+    this.openbotExecutor = executor && executor.trim().toLowerCase() !== 'off' ? executor.trim() : null;
   }
 
   private readonly openbot?: OpenBotLike;
+  private readonly openbotExecutor: string | null;
+  private avisouSemExecutor = false;
 
   /** Quando a última pesquisa terminou (para reconhecer continuação). */
   private lastResearchAt = 0;
@@ -363,6 +378,8 @@ export class NightCoordinator {
       await this.memory.logRoute({ text, language, decision: { ...decision, reason: `bloqueado: decisão vinda de ${origem === 'voz' ? 'voz ao vivo' : 'tela'} (${decision.reason})` }, reply: out });
       return this.finish(text, language, out, intent.kind, 'rules');
     }
+    // De tela não: o executor é uma tela do OpenBot, e o pedido voltaria para ele (laço).
+    if (origem !== 'tela') this.espelharNoExecutor(intent.kind, text);
     if (intent.kind === 'openbot-task') {
       const r = await this.openbotTask(intent, language, origem);
       await this.memory.logRoute({ text, language, decision, reply: r.text });
@@ -1618,6 +1635,24 @@ export class NightCoordinator {
     if (!this.openbot) return { text: say(language, 'A ligação com o OpenBot não está ligada neste NIGHT.', 'The OpenBot link is not on in this NIGHT.') };
     const r = await this.openbot.enviar(intent.agent, intent.task);
     return { text: r.texto, depois: r.depois };
+  }
+
+  /**
+   * Pedido de trabalho do Joel também vai para o executor do OpenBot, que trabalha junto, na pasta dele. Não espera:
+   * a resposta chega pelo aviso do OpenBot (painel e voz), e uma falha lá nunca atrapalha o NIGHT.
+   */
+  private espelharNoExecutor(kind: Intent['kind'], text: string): void {
+    if (!this.openbot || !this.openbotExecutor || !ESPELHO_EXECUTOR.has(kind)) return;
+    const tarefa = `Pedido do Joel ao NIGHT (o NIGHT também está fazendo a parte dele; faça a sua): ${text.trim()}`;
+    void this.openbot.enviar(this.openbotExecutor, tarefa)
+      .then((r) => {
+        if (!r.depois && !this.avisouSemExecutor) {
+          this.avisouSemExecutor = true;
+          console.warn(`[openbot] cópia para o executor não foi: ${r.texto}`);
+        }
+        return r.depois?.catch(() => undefined);
+      })
+      .catch(() => undefined);
   }
 
   private async openbotStatus(language: Language): Promise<string> {

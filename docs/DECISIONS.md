@@ -261,3 +261,16 @@ Pedido do Joel: cadastrar o NIGHT no OpenBot, ver no NIGHT o que o OpenBot faz e
 - **Por que o pedido não foi ao OpenBot:** por desenho (D-019), o NIGHT só manda tarefa ao OpenBot quando a frase cita
   o OpenBot ("manda pro Radar do OpenBot …"). "Pesquisa produtos de lowticket" roda o Radar do próprio NIGHT. A ponte
   NIGHT → OpenBot foi testada em 20/11 e está de pé (os 6 agentes respondem pela API).
+
+## D-022 — Pedido de trabalho vai também para o NIGHT Executor do OpenBot (20/11/2026)
+- **Pedido do Joel:** "toda mensagem que eu mando já manda pro OpenBot executar junto". Combinado: só **pedido de
+  trabalho** (pesquisa, Radar, código) e para **um agente executor**, o `NIGHT Executor`. Conversa, status, decisões,
+  rodar projeto, campanha (dinheiro) e vídeo (parado) ficam só no NIGHT. Muda a D-019 só neste ponto.
+- Vale para o que vem do Joel (painel, terminal e voz). Pedido que chega de uma tela do OpenBot **não** é espelhado:
+  voltaria para o OpenBot e viraria laço. O executor usa `night_pedir` só para consultar, nunca para reenviar o pedido.
+- O NIGHT não espera o executor: manda e segue. A resposta chega pelo aviso do OpenBot (painel e voz).
+- O executor escreve só em `D:\NIGHT-data\executor\`, não edita repositório (o código do NIGHT segue na cópia
+  separada, com revisão) e nunca gasta, publica, aprova ou faz push.
+- `NIGHT_OPENBOT_EXECUTOR` muda o nome do agente; `off` desliga. Sem o agente importado, a cópia não vai (aviso no log).
+- Roteador no mesmo dia: "use o radar e pesquise …" e a transcrição "Logtics"/"Lowtickets" abrem o Radar; "verifique
+  por que … com o OpenBot" vai para o status do OpenBot, que agora lista as tarefas que falharam e o motivo.

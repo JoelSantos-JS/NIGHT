@@ -247,6 +247,7 @@ O Codex fez, o Claude revisou e corrigiu, e o Codex revisou a segurança. Os 5 a
 
 | Variável | Para quê |
 |---|---|
+| `NIGHT_OPENBOT_EXECUTOR` | Agente do OpenBot que recebe cópia dos pedidos de trabalho (padrão `NIGHT Executor`; `off` desliga; novo em 20/11, D-022) |
 | `NIGHT_LLM_CTX` | Contexto do modelo local (padrão 8192; novo em 20/11) |
 | `NIGHT_META_AD_ACCOUNT` | Conta de anúncios das campanhas (definida no usuário do Windows; não vai no repositório) |
 | `NIGHT_META_READ_TOOLS` | Ferramentas de leitura do Radar (padrão `mcp__meta-ads__ads_library_search`; `off` desliga) |
