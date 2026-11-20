@@ -74,16 +74,16 @@ A passagem anterior, de 17/11, tem o detalhe de Radar, low-ticket, campanha na M
 - **NIGHT manda tarefa:** "manda pro Radar do OpenBot pesquisar X" (voz, terminal, painel ou voz ao vivo). A resposta do agente chega depois e aparece na conversa do NIGHT. Código em [src/openbot/](../src/openbot/).
 - **NIGHT vê o OpenBot:** seção **OpenBot** no painel com agentes, tarefas mandadas, o que espera você (aprovações: Aceitar/Recusar ali; perguntas: só no OpenBot) e o diário das telas (`night_relatar`).
 - Tela do OpenBot não manda tarefa a outro agente (laço) e não decide nada. A voz ao vivo tem origem `'voz'`: manda tarefa, não decide.
-- Estado no OpenBot em 20/11: 6 agentes (NIGHT, Radar, Produto, Campanha, Código no Codex gpt-6-luna; Vídeo no Claude Opus), **nenhum servidor MCP cadastrado** e todos com acesso "full" e controle do computador ligado.
+- Estado no OpenBot em 20/11: 6 agentes (NIGHT, Radar, Produto, Campanha, Código no Codex gpt-6-luna; Vídeo no Claude Opus), servidor `night` cadastrado e Local scripts ligado em todos (20/11); acesso "full" e controle do computador mantidos por decisão do Joel.
 
 ---
 
 ## 3. Pendências, em ordem
 
 ### 3.0b No OpenBot (cliques do Joel, ou do Claude pelo mouse)
-1. Marketplace → Apps → servidor por URL: nome `night`, URL `http://127.0.0.1:4517/mcp`, liberado para as 6 telas.
-2. Em cada agente: Configurações → Permissões → **Local scripts** ligado (sem isso o NIGHT não manda tarefa nem vê pendências).
-3. Em cada agente: acesso com aprovação (não "full") e **controle do computador desligado**.
+1. ~~Marketplace → Apps → servidor por URL~~ **feito em 20/11** pelo Claude (mouse): `night`, `http://127.0.0.1:4517/mcp`, todos os agentes, teste "Connected · 4 tools".
+2. ~~Local scripts~~ **ligado nos 6 agentes em 20/11** pelo Claude (mouse). Conferido: `openbot-cli list` mostra os 6 e o painel do NIGHT diz "ligado".
+3. Acesso "full" e controle do computador: **o Joel decidiu manter assim por enquanto (20/11)**. Não mexer sem ele pedir.
 4. Testar: no NIGHT, "manda pro Radar do OpenBot dizer oi"; no painel, seção OpenBot mostra a tarefa e a resposta.
 
 ### 3.0 Testar a voz ao vivo (depois de 20/11, 13:57)

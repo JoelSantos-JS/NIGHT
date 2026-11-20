@@ -223,4 +223,5 @@ Pedido do Joel: cadastrar o NIGHT no OpenBot, ver no NIGHT o que o OpenBot faz e
   recusa no painel (`/api/openbot/responder`, token e Origin); pergunta, só no OpenBot.
 - **Achado 20/11:** os 6 agentes do NIGHT no OpenBot estavam com acesso "full" e controle do computador ligado, embora
   as instruções digam que a tela não age no PC. Com o NIGHT mandando tarefas, isso tem que ser fechado no OpenBot
-  (acesso com aprovação e sem controle do computador).
+  (acesso com aprovação e sem controle do computador). Decisão do Joel em 20/11: **manter acesso total e controle do
+  computador por enquanto**.
