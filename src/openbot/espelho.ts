@@ -241,6 +241,9 @@ export class OpenBotEspelho implements OpenBotLike {
     if (andando.length) partes.push(`Tarefas que mandei e ainda rodam: ${andando.map((t) => `${t.agente} (${t.texto.slice(0, 60)})`).join('; ')}.`);
     const prontas = this.tarefas.filter((t) => t.status === 'completed').slice(0, 3);
     if (prontas.length) partes.push(`Últimas prontas: ${prontas.map((t) => `${t.agente}: ${t.texto.slice(0, 60)}`).join('; ')}.`);
+    // "Por que o OpenBot não recebe?": a falha e o motivo que o OpenBot deu respondem a pergunta.
+    const falhas = this.tarefas.filter((t) => t.status === 'failed' || t.status === 'interrupted').slice(0, 3);
+    if (falhas.length) partes.push(`Falharam: ${falhas.map((t) => `${t.agente} (${t.erro ? redactKeyLike(t.erro).slice(0, 120) : 'sem motivo dado'})`).join('; ')}.`);
     if (this.pendentes.length) partes.push(`${this.pendentes.length} coisa(s) esperando você no painel, seção OpenBot.`);
     // O texto dos relatos fica só no painel: o /mcp não tem token, então qualquer programa local escreve nele,
     // e o resumo pode ir para a voz ao vivo (OpenAI).

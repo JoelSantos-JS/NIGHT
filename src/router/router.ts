@@ -438,7 +438,16 @@ const ANY_SEARCH_VERB = /\b(pesquisa\w*|vasculha\w*|procura\w*|busca\w*|minera\w
 /** O Radar é de low-ticket: sem nicho dito, o nicho é esse (os subnichos saem da pesquisa). */
 const RADAR_DEFAULT_NICHE = 'low ticket';
 /** "pesquisa produtos de lowticket": low-ticket é o nicho do Radar, então vale como alvo mesmo sem "ofertas". */
-const LOW_TICKET_WORD = /\b(low ?ticket|infoprodutos?)\b/;
+// Também como a transcrição da voz costuma escrever (uso real 20/11: "Logtics", "Lowtickets").
+const LOW_TICKET_SRC = String.raw`low ?tickets?|lo ?tickets?|lou ?tickets?|low ?tiquetes?|logtics?|lowtics?|low ?tics?|infoprodutos?`;
+const LOW_TICKET_WORD = new RegExp(`\\b(${LOW_TICKET_SRC})\\b`);
+/** "Lowtickets, low tickets": a frase é só o nicho (resposta curta à pergunta do Night). */
+const ONLY_LOW_TICKET = new RegExp(`^(?:(?:produtos?|ofertas?|radar)\\s+(?:de\\s+)?)?(?:${LOW_TICKET_SRC})(?:[\\s,.;!]+(?:${LOW_TICKET_SRC}))*[\\s.!]*$`);
+/** "use o radar e pesquise X": o verbo no meio da frase vale quando o Radar é citado pelo nome. */
+const USE_RADAR = /\b(usa|use|usar|usando|liga|ligue|abre|abra)\b.{0,10}\bradar\b/;
+/** Só pedido (imperativo/infinitivo): "o radar pesquisou?" e "ainda tá rodando?" não abrem Radar novo. */
+const RADAR_ORDER_VERB = /\b(pesquisa|pesquise|pesquisar|vasculha|vasculhe|vasculhar|procura|procure|procurar|busca|busque|buscar|minera|minere|minerar|garimpa|garimpe|garimpar)\b/;
+const ASKING_FOR = /\b(voce|pode|poderia|consegue|quero|pra mim|para mim|can you|could you|for me|please)\b/;
 /** "o que é o radar de ofertas?" é pergunta sobre o Radar, não pedido de busca. */
 const ABOUT_RADAR = /\bo que (e|eh|sao)\b|\bcomo funciona\b/;
 const NICHE_FILLER = /^(?:(?:no|na|o|a|pelo|pela)\s+)?(?:radar|ofertas?|offers?|produtos?|algo|alguma coisa|coisas?|tudo|pra mim|para mim)?$/i;
@@ -446,15 +455,21 @@ const NICHE_FILLER = /^(?:(?:no|na|o|a|pelo|pela)\s+)?(?:radar|ofertas?|offers?|
 function radarSearchIntent(text: string, n: string): Intent | null {
   const hasTarget = new RegExp(`\\b(?:${OFFER_SRC})\\b`).test(n) || new RegExp(`\\b${RADAR_SRC}\\b`).test(n);
   if (ABOUT_RADAR.test(n)) return null;
-  const byName = RADAR_BY_NAME.test(n) && ANY_SEARCH_VERB.test(n);
+  if (ONLY_LOW_TICKET.test(n)) return { kind: 'radar-search', query: RADAR_DEFAULT_NICHE };
+  const radarWord = new RegExp(`\\b${RADAR_SRC}\\b`).test(n);
+  const pedido = !/\?\s*$/.test(n) || ASKING_FOR.test(n);
+  const byName = (RADAR_BY_NAME.test(n) && ANY_SEARCH_VERB.test(n))
+    || (radarWord && pedido && (USE_RADAR.test(n) || RADAR_ORDER_VERB.test(n)));
   const verb = SEARCH_VERB.test(n) || RADAR_RESEARCH_VERB.test(n);
-  const lowTicket = LOW_TICKET_WORD.test(n) && verb;
+  const lowTicket = LOW_TICKET_WORD.test(n) && (verb || (pedido && RADAR_ORDER_VERB.test(n)));
   if (!byName && !lowTicket && (!hasTarget || !verb)) return null;
-  const limpo = text.replace(/\bradar de ofertas\b/gi, 'radar').replace(/\s+(?:pra|para) mim\b/gi, '').replace(/[?]+$/, '');
+  const limpo = text.replace(/\bradar de ofertas\b/gi, 'radar').replace(/\s+(?:pra|para) mim\b/gi, '').replace(/[?]+$/, '')
+    // "use o radar e pesquise X": o "use o radar" não é nicho.
+    .replace(/\b(?:usa|use|usar|usando|liga|ligue|abre|abra)\b.{0,10}\bradar\b\s*(?:e\s+)?/i, '');
   const query = radarQuery(limpo);
   if (NICHE_FILLER.test(query.trim())) return { kind: 'radar-search', query: RADAR_DEFAULT_NICHE };
   // "produtos de lowticket" sem subnicho: o nicho é low-ticket mesmo.
-  if (lowTicket && /^(?:(?:produtos?|ofertas?|coisas?)\s+(?:de|do|da)\s+)?(low ?ticket|infoprodutos?)$/i.test(query.trim())) return { kind: 'radar-search', query: RADAR_DEFAULT_NICHE };
+  if (new RegExp(`^(?:(?:produtos?|ofertas?|coisas?)\\s+(?:de|do|da)\\s+)?(?:${LOW_TICKET_SRC})$`, 'i').test(normalize(query))) return { kind: 'radar-search', query: RADAR_DEFAULT_NICHE };
   return { kind: 'radar-search', query };
 }
 
@@ -486,8 +501,17 @@ const OPENBOT_STATUS = new RegExp([
   String.raw`\bhow (is|are)\b.{0,30}\bopen ?bot\b`,
 ].join('|'));
 
+// Diagnóstico da ligação com o OpenBot (uso real 20/11, por voz: "verifique por quê as tentativas de comunicando com
+// o OpenBot"): o Qwen mandava isso para a pesquisa na internet, que não enxerga a ligação. Precisa de um assunto de
+// falha/ligação na frase; pedido de envio ("manda pro X do OpenBot verificar…") não entra aqui.
+const OPENBOT_TROUBLE = /\b(comunic\w*|conex\w*|conect\w*|ligacao|recebe\w*|funcion\w*|problemas?|erros?|falh\w*|tentativas?|respond\w*|resposta)\b/;
+const OPENBOT_CHECK = /\b(por ?que|porque|verifi\w*|checa\w*|cheque|confer\w*|olh\w*|testa\w*|teste|ve|veja|why|check|test)\b/;
+
 function openbotStatusIntent(n: string): Intent | null {
-  return OPENBOT.test(n) && OPENBOT_STATUS.test(n) ? { kind: 'openbot-status' } : null;
+  if (!OPENBOT.test(n)) return null;
+  if (OPENBOT_STATUS.test(n)) return { kind: 'openbot-status' };
+  if (!OPENBOT_SEND.test(n) && OPENBOT_TROUBLE.test(n) && OPENBOT_CHECK.test(n)) return { kind: 'openbot-status' };
+  return null;
 }
 
 // Conector entre o agente e o OpenBot: "Radar do OpenBot", "Ada no openbot", "Radar agent in OpenBot".

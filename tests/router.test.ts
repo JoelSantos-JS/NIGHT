@@ -230,6 +230,26 @@ describe('comandos de Radar, vídeo e oferta (F06) e status de trabalho (F07)', 
     }
   });
 
+  test('Radar pelo nome com o verbo no meio e low-ticket como a voz transcreve (uso real 20/11)', () => {
+    const cases: [string, string][] = [
+      ['que você faz algo pra mim? Quero que você use o radar e pesquise oferta Logtics pra mim', 'low ticket'],
+      ['Lowtickets, low tickets', 'low ticket'],
+      ['low ticket', 'low ticket'],
+      ['use o radar pra mim', 'low ticket'],
+      ['quero que você pesquise produtos de lowticket', 'low ticket'],
+      ['usa o radar e procura ofertas de emagrecimento', 'emagrecimento'],
+    ];
+    for (const [text, query] of cases) {
+      assert.deepEqual(ruleIntent(text, PROJECTS), { kind: 'radar-search', query }, text);
+    }
+    // Pergunta sobre o Radar não abre um Radar novo.
+    for (const text of ['o radar ainda tá rodando?', 'o radar pesquisou alguma coisa?', 'o que o radar achou?']) {
+      assert.notEqual(ruleIntent(text, PROJECTS)?.kind, 'radar-search', text);
+    }
+    // "logistics" não é low-ticket.
+    assert.notEqual(ruleIntent('pesquisa empresas de logistics', PROJECTS)?.kind, 'radar-search');
+  });
+
   test('video-create em PT e EN', () => {
     const cases: [string, string][] = [
       ['cria um vídeo sobre café gelado', 'café gelado'],
@@ -476,6 +496,11 @@ describe('OpenBot: pedidos para os agentes (só por regra)', () => {
       'como estão os agentes do OpenBot?',
       'status do openbot',
       'what did openbot do?',
+      // Diagnóstico da ligação (uso real 20/11, por voz): ia para a pesquisa na internet.
+      'Então, Night, faça uma... Quero que você dê uma olhada no... Na plataforma aqui. E verifique por quê as... tentativas de comunicando com o OpenBot',
+      'por que o OpenBot não recebe?',
+      'verifica a comunicação com o OpenBot',
+      'checa a conexão com o open bot',
     ];
     for (const text of cases) {
       assert.deepEqual(ruleIntent(text, PROJECTS), { kind: 'openbot-status' }, text);
