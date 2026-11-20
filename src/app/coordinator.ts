@@ -243,6 +243,8 @@ export interface HandleOptions {
  * projeto, campanha (dinheiro) e vídeo (parado) ficam só no NIGHT.
  */
 const ESPELHO_EXECUTOR: ReadonlySet<Intent['kind']> = new Set(['research', 'radar-search', 'coding-task']);
+/** O mesmo pedido de novo dentro deste tempo não vai outra vez ao executor. */
+const ESPELHO_REPETIDO_MS = 2 * 60_000;
 
 /** Intenções que são decisão do dono: nunca executam vindas de tela (só pela voz, terminal ou painel). */
 const DECISOES: ReadonlySet<Intent['kind']> = new Set([
@@ -320,7 +322,8 @@ export class NightCoordinator {
 
   private readonly openbot?: OpenBotLike;
   private readonly openbotExecutor: string | null;
-  private avisouSemExecutor = false;
+  /** Último pedido copiado para o executor (para não mandar duas vezes o mesmo em seguida). */
+  private ultimoEspelho: { texto: string; em: number } | null = null;
 
   /** Quando a última pesquisa terminou (para reconhecer continuação). */
   private lastResearchAt = 0;
@@ -1643,16 +1646,24 @@ export class NightCoordinator {
    */
   private espelharNoExecutor(kind: Intent['kind'], text: string): void {
     if (!this.openbot || !this.openbotExecutor || !ESPELHO_EXECUTOR.has(kind)) return;
-    const tarefa = `Pedido do Joel ao NIGHT (o NIGHT também está fazendo a parte dele; faça a sua): ${text.trim()}`;
+    const pedido = text.trim();
+    // Pedido com cara de chave/token não sai do NIGHT: o agente do OpenBot guardaria no histórico dele (revisão do Codex).
+    if (redactKeyLike(pedido) !== pedido) {
+      console.warn('[openbot] cópia para o executor não foi: o pedido parece ter uma chave ou token.');
+      return;
+    }
+    // O mesmo pedido repetido logo em seguida (voz que repete, "pesquisa de novo") não vira uma segunda execução lá.
+    const agora = Date.now();
+    if (this.ultimoEspelho && this.ultimoEspelho.texto === normalize(pedido) && agora - this.ultimoEspelho.em < ESPELHO_REPETIDO_MS) return;
+    this.ultimoEspelho = { texto: normalize(pedido), em: agora };
+    const tarefa = `Pedido do Joel ao NIGHT (o NIGHT também está fazendo a parte dele; faça a sua): ${pedido}`;
     void this.openbot.enviar(this.openbotExecutor, tarefa)
       .then((r) => {
-        if (!r.depois && !this.avisouSemExecutor) {
-          this.avisouSemExecutor = true;
-          console.warn(`[openbot] cópia para o executor não foi: ${r.texto}`);
-        }
+        // Sem `depois` = não foi (OpenBot fechado, executor não importado…): o NIGHT segue sozinho, mas fica no log.
+        if (!r.depois) console.warn(`[openbot] cópia para o executor não foi: ${r.texto}`);
         return r.depois?.catch(() => undefined);
       })
-      .catch(() => undefined);
+      .catch((err: unknown) => console.warn(`[openbot] cópia para o executor falhou: ${redactKeyLike(String((err as Error)?.message ?? err))}`));
   }
 
   private async openbotStatus(language: Language): Promise<string> {

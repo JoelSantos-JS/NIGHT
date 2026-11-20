@@ -955,6 +955,15 @@ describe('ligação com o OpenBot pelo coordenador', () => {
     await comExecutor(conversa).handle('bom dia', undefined, { origem: 'dono' });
     await comExecutor(conversa).handle('o que o openbot fez?', undefined, { origem: 'dono' });
     assert.equal(conversa.enviados.length, 0, 'conversa e status ficam só no NIGHT');
+    // Revisão do Codex: chave não sai do NIGHT, e o mesmo pedido em seguida não vai duas vezes.
+    const comChave = new OpenBotFalso();
+    await (await comExecutor(comChave).handle('pesquisa pra mim se a chave sk-abcdefghijklmnop123 ainda vale')).followUp;
+    assert.equal(comChave.enviados.length, 0, 'pedido com chave não vai ao OpenBot');
+    const repetido = new OpenBotFalso();
+    const coord = comExecutor(repetido);
+    await (await coord.handle(pesquisa)).followUp;
+    await (await coord.handle(pesquisa)).followUp;
+    assert.equal(repetido.enviados.length, 1, 'repetição logo em seguida não vira segunda execução');
     // "off" desliga.
     const desligado = new OpenBotFalso();
     const llm = new FakeLlm(() => 'ok');
