@@ -35,8 +35,11 @@ export class OllamaLlm implements LocalLlm {
         // 9,7 tok/s. NIGHT_LLM_GPU=1 volta para a placa (usa menos RAM, mas é mais lento).
         // num_thread 4: medido em 04/11, 23,6 tok/s (igual a 6 threads) e deixa núcleos livres para o Whisper,
         // que chegou a levar 19 s para transcrever disputando o processador com o Qwen.
+        // num_ctx 8192: sem ele o Ollama abre o contexto inteiro do Qwen3 (40.960) e o 1.7B ocupa 6,4 GB de RAM
+        // (medido em 20/11, com o PC em 96% de memória). As conversas do NIGHT com o modelo local são curtas.
         options: {
           temperature: opts.json ? 0 : 0.4,
+          num_ctx: Number(process.env.NIGHT_LLM_CTX ?? 8192),
           ...(process.env.NIGHT_LLM_GPU === '1' ? {} : { num_gpu: 0, num_thread: Number(process.env.NIGHT_LLM_THREADS ?? 4) }),
         },
       }),
