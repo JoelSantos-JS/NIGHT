@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import pg from 'pg';
 import { forSpeech, nightDataRoot, NightCoordinator, PALAVRAS_LOW_TICKET } from '../src/app/coordinator.ts';
@@ -11,6 +14,9 @@ import type { OpenBotLike } from '../src/openbot/tipos.ts';
 import { PgMemory } from '../src/memory/pg-memory.ts';
 import { scoreCandidate } from '../src/radar/score.ts';
 import { PgRadarStore } from '../src/radar/store.ts';
+import { ArtifactStore } from '../src/artifacts/store.ts';
+import { RELATORIO_RADAR } from '../src/radar/worker.ts';
+import type { RadarConversationStore } from '../src/radar/conversation.ts';
 import { NightRouter } from '../src/router/router.ts';
 import { FakeLlm, FakeResearcher, resetTestDb, TEST_URL, truncateAll } from './helpers.ts';
 
@@ -858,6 +864,82 @@ describe('conversa com a oferta do Radar (R06)', () => {
     assert.equal(noJob1.length, 1, 'o evento foi para o job do candidato');
     assert.match(noJob1[0]!.message, /oferta aprovada pelo Joel/);
     assert.equal(noJob2.length, 0, 'o job de mesmo número da oferta não foi tocado');
+  });
+});
+
+describe('resultado do Radar no status sem banco', () => {
+  const job = { id: randomUUID(), kind: 'radar', number: 2, status: 'succeeded' } as Job;
+  const memory = {
+    recentActivity: async () => [], logRoute: async () => {}, listProjects: async () => [],
+    getJobByNumber: async () => job,
+    listJobEvents: async () => [{
+      timestamp: '2026-11-20T12:00:00.000Z', eventType: 'status', source: 'worker',
+      message: 'running -> succeeded: concluído com artefatos verificados',
+    }],
+  } as unknown as Memory;
+
+  function coordinator(artifacts?: ArtifactStore, radar?: RadarConversationStore): NightCoordinator {
+    const llm = new FakeLlm(() => 'não usado');
+    return new NightCoordinator(memory, new NightRouter(llm, async () => []), llm,
+      { artifacts, radar, restoreRecent: false });
+  }
+
+  async function withReport(
+    values: { vistos: number; ofertas: number[]; avisos?: string[] },
+    run: (artifacts: ArtifactStore) => Promise<void>,
+  ): Promise<void> {
+    const root = await mkdtemp(join(tmpdir(), 'night-radar-status-'));
+    try {
+      const artifacts = new ArtifactStore(root);
+      await artifacts.add(job.id, {
+        name: RELATORIO_RADAR, origin: 'teste', kind: 'relatorio',
+        data: JSON.stringify({
+          version: 'relatorio-radar/1', jobId: job.id,
+          totais: { vistos: values.vistos, novos: 0, duplicados: 0, incompletos: 0 },
+          ofertas: values.ofertas.map((number) => ({ number, grupo: `g${number}`, status: 'rascunho' })),
+          avisos: values.avisos ?? [],
+        }),
+      });
+      await run(artifacts);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  test('0 ofertas mostra anúncios vistos e primeiro aviso sem chave nem log na fala', async () => {
+    await withReport({ vistos: 0, ofertas: [], avisos: ['Meta: sem anúncios; ghp_abcdefghijklmnopqrst ' + 'x'.repeat(230), 'outro aviso'] }, async (artifacts) => {
+      const reply = await coordinator(artifacts).handle('como está o radar 2?');
+      assert.match(reply.text, /Radar 2 terminou: 0 ofertas e 0 anúncios vistos/);
+      assert.match(reply.text, /Meta: sem anúncios/);
+      assert.match(reply.text, /\[chave apagada\]/);
+      assert.ok(!reply.text.includes('ghp_abcdefghijklmnopqrst'));
+      assert.ok(!reply.text.includes('outro aviso'));
+      assert.ok(!reply.text.includes('running -> succeeded'));
+      assert.match(reply.text, /no painel, seção Radar/);
+      assert.match(reply.detail ?? '', /running -> succeeded/);
+      assert.ok(reply.text.length < 300);
+    });
+  });
+
+  test('lista até 3 ofertas do relatório com nota da loja', async () => {
+    const radar = {
+      getOffer: async (number: number) => ({ number, candidateId: `c${number}` }),
+      getCandidate: async (id: string) => ({ score: id === 'c2' ? null : { nota: Number(id.slice(1)) + 5 } }),
+    } as unknown as RadarConversationStore;
+    await withReport({ vistos: 12, ofertas: [1, 2, 3, 4] }, async (artifacts) => {
+      const reply = await coordinator(artifacts, radar).handle('como está o radar 2?');
+      assert.match(reply.text, /4 ofertas: oferta 1, nota 6; oferta 2, sem nota; oferta 3, nota 8/);
+      assert.ok(!reply.text.includes('oferta 4'));
+      assert.match(reply.text, /no painel, seção Radar/);
+      assert.ok(!reply.text.includes('running -> succeeded'));
+    });
+  });
+
+  test('sem relatório não inventa resultado nem repete evento técnico', async () => {
+    const reply = await coordinator().handle('como está o radar 2?');
+    assert.match(reply.text, /não consegui ler o relatório/);
+    assert.ok(!reply.text.includes('running -> succeeded'));
+    assert.match(reply.detail ?? '', /running -> succeeded/);
   });
 });
 

@@ -244,6 +244,7 @@ export async function createNight(opts: CreateNightOptions = {}) {
     researchReserves,
     pcResearchers,
     radar: radarStore,
+    artifacts,
     jobRunners,
     links: offerLinks,
     // A montagem cria tudo PAUSADO; ativar fica com o Joel no Gerenciador (chave de status desligada na Meta).

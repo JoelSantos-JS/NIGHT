@@ -7,6 +7,8 @@
 // - Nada é aprovado/cancelado por palpite do modelo: esses intents só vêm das regras do roteador.
 
 import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { Intent, LocalLlm, Memory, ModelRouter } from '../core/interfaces.ts';
 import type { ConversationTurn, Job, JobKind, Language, Project, Task } from '../core/types.ts';
 import { FINAL_JOB_STATUSES, FINAL_TASK_STATUSES } from '../core/types.ts';
@@ -23,6 +25,8 @@ import {
 import type { CampaignInsights, InsightsPeriod, MetaInsightsReader } from '../ads/meta-reader.ts';
 import type { OfferLinksStore } from '../lowticket/links.ts';
 import type { OfferProposal } from '../radar/offer.ts';
+import type { ArtifactStore } from '../artifacts/store.ts';
+import { RELATORIO_RADAR, type RelatorioRadar } from '../radar/worker.ts';
 import { detectLanguage, jobNumberIn, normalize, researchScope, ruleIntent } from '../router/router.ts';
 import { describePlan, detectRunner, findFolders, WindowLauncher, type FolderHit, type Launcher, type RunPlan } from '../tools/projects.ts';
 import {
@@ -43,7 +47,9 @@ export interface Reply {
 
 const HISTORY_TURNS = 6;
 const FOLLOW_UP_MS = 3 * 60_000;
-const FOLLOW_UP = /\b(traz|traga|trazer|mostra|mostre|me fala|fala mais|conta mais|me conta|detalha|detalhe|lista|liste|quais|qual foi|e os|e as|mais sobre|comentarios?|opinioes|opiniao|resenhas?|onde|quando|quem|quanto|bring|show me|tell me more|more about|what about|which|comments|reviews)\b/;
+export const FOLLOW_UP = /\b(traz|traga|trazer|mostra|mostre|me fala|fala mais|conta mais|me conta|detalha|detalhe|lista|liste|quais|qual foi|e os|e as|mais sobre|comentarios?|opinioes|opiniao|resenhas?|onde|quando|quem|quanto|bring|show me|tell me more|more about|what about|which|comments|reviews)\b|\b(pega|pegue|pegar|compara|compare|comparar|abre|abra|acessa|acesse)\b.{0,40}\b(dai|disso|dele|dela|desse|dessa|deste|desta|tambem|o site|a pagina|o link|esse|essa|isso|com a|com o)\b/;
+// O segundo trecho: "Sim, quero que pegue os dados daí também" (uso real 20/11, depois de um link). Só com referência
+// ao que veio antes: "meus dados estão salvos?" não é continuação (revisão do Codex).
 const QWEN_HISTORY_TURNS = 3;
 /**
  * Pedido genérico de low-ticket ("vasculha ofertas de low ticket"): o Radar varre as frases que esse tipo de oferta
@@ -202,6 +208,8 @@ export interface CoordinatorOptions {
   folderSearch?: (spoken: string) => FolderHit[];
   /** Radar ligado ao banco; sem ele, os comandos de oferta só avisam que falta banco. */
   radar?: RadarConversationStore;
+  /** Artefatos dos trabalhos; sem ele, o resumo do Radar usa apenas o estado do job. */
+  artifacts?: ArtifactStore;
   /** Executores por tipo: sem runner nesta janela, cancelar não pode fingir que parou. */
   jobRunners?: Partial<Record<WorkKind, JobRunner>>;
   /** Links de cada oferta (página, checkout, imagens): só o Joel sabe onde publicou (L03/M05). */
@@ -287,6 +295,7 @@ export class NightCoordinator {
   private readonly folderSearch: (spoken: string) => FolderHit[];
   /** Radar ligado ao banco; sem ele, os comandos de oferta só avisam que falta banco. */
   private readonly radar?: RadarConversationStore;
+  private readonly artifacts?: ArtifactStore;
   /** Executores por tipo: sem runner nesta janela, cancelar não pode fingir que parou. */
   private readonly jobRunners: Partial<Record<WorkKind, JobRunner>>;
   private readonly links?: OfferLinksStore;
@@ -310,6 +319,7 @@ export class NightCoordinator {
     this.launcher = opts.launcher ?? new WindowLauncher();
     this.folderSearch = opts.folderSearch ?? ((s: string) => findFolders(s));
     this.radar = opts.radar;
+    this.artifacts = opts.artifacts;
     this.jobRunners = opts.jobRunners ?? {};
     this.links = opts.links;
     this.campaign = opts.campaign;
@@ -976,6 +986,61 @@ export class NightCoordinator {
     }
   }
 
+  /** O relatório pertence ao job pedido; arquivo ausente ou inválido nunca vira resultado inventado. */
+  private async radarReport(jobId: string): Promise<RelatorioRadar | null> {
+    if (!this.artifacts) return null;
+    try {
+      const manifest = await this.artifacts.manifest(jobId);
+      if (!manifest?.items.some((item) => item.name === RELATORIO_RADAR)) return null;
+      const raw: unknown = JSON.parse(await readFile(join(this.artifacts.root, jobId, RELATORIO_RADAR), 'utf8'));
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+      const report = raw as Partial<RelatorioRadar>;
+      if (report.version !== 'relatorio-radar/1' || report.jobId !== jobId ||
+          !Array.isArray(report.ofertas) || !Array.isArray(report.avisos) ||
+          typeof report.totais?.vistos !== 'number' || !Number.isFinite(report.totais.vistos)) return null;
+      return report as RelatorioRadar;
+    } catch {
+      return null;
+    }
+  }
+
+  private async radarResult(job: Job, language: Language): Promise<string> {
+    const report = await this.radarReport(job.id);
+    const label = `Radar ${job.number}`;
+    const painel = say(language, 'Veja no painel, seção Radar.', 'See the Radar section in the panel.');
+    if (!report) return say(language,
+      `${label} terminou, mas não consegui ler o relatório. ${painel}`,
+      `${label} finished, but I could not read its report. ${painel}`);
+    const offers = report.ofertas.filter((offer) =>
+      typeof offer?.number === 'number' && Number.isSafeInteger(offer.number) && offer.number > 0);
+    if (offers.length === 0) {
+      const vistos = Math.max(0, Math.trunc(report.totais.vistos));
+      const aviso = report.avisos.find((value): value is string => typeof value === 'string' && !!value.trim());
+      const motivo = aviso ? forSpeech(redactKeyLike(aviso)).slice(0, 200).trim() : '';
+      return say(language,
+        `${label} terminou: 0 ofertas e ${vistos} anúncios vistos.${motivo ? ` Aviso: ${motivo}.` : ''} ${painel}`,
+        `${label} finished: 0 offers and ${vistos} ads seen.${motivo ? ` Notice: ${motivo}.` : ''} ${painel}`);
+    }
+    const primeiras: string[] = [];
+    for (const item of offers.slice(0, 3)) {
+      let nota: number | null = null;
+      try {
+        const offer = await this.radar?.getOffer(item.number);
+        const candidate = offer?.candidateId ? await this.radar?.getCandidate(offer.candidateId) : null;
+        const score = candidate?.score?.nota;
+        if (typeof score === 'number' && Number.isFinite(score)) nota = score;
+      } catch {
+        // A oferta continua citável pelo número do relatório quando o banco está indisponível.
+      }
+      primeiras.push(say(language,
+        `oferta ${item.number}, ${nota === null ? 'sem nota' : `nota ${nota}`}`,
+        `offer ${item.number}, ${nota === null ? 'no score' : `score ${nota}`}`));
+    }
+    return say(language,
+      `${label} terminou com ${offers.length} ${offers.length === 1 ? 'oferta' : 'ofertas'}: ${primeiras.join('; ')}. ${painel}`,
+      `${label} finished with ${offers.length} ${offers.length === 1 ? 'offer' : 'offers'}: ${primeiras.join('; ')}. ${painel}`);
+  }
+
   /** Status do trabalho vem do banco, nunca do modelo: com número, estado + último evento; sem, resumo. */
   private async jobStatus(
     intent: Extract<Intent, { kind: 'job-status' }>, language: Language,
@@ -995,7 +1060,9 @@ export class NightCoordinator {
       const events = await this.memory.listJobEvents(job.id);
       const last = events[events.length - 1];
       const waiting = this.waitingExplanation(job, language);
-      const text = `${jobLabel(kind, language)} ${job.number} ${this.jobState(job, language)}.` +
+      const text = kind === 'radar' && job.status === 'succeeded'
+        ? await this.radarResult(job, language)
+        : `${jobLabel(kind, language)} ${job.number} ${this.jobState(job, language)}.` +
         (waiting ? ` ${waiting}` : '') +
         (last ? ` ${en ? 'Last event' : 'Último evento'}: ${last.message} (${whenSpoken(last.timestamp, language)}).` : '');
       const detail = [

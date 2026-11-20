@@ -164,7 +164,8 @@ describe('Base de trabalhos de ponta a ponta (F08)', () => {
     const readerLlm = new FakeLlm(() => 'não deveria ser usado');
     const reader = coordinator(mem, readerLlm);
     const status = await reader.handle('como está o radar 1?');
-    assert.match(status.text, /^Radar 1 está pronto\./);
+    // O trabalhador falso não grava relatório: o NIGHT diz que terminou e que não leu o resultado (não inventa).
+    assert.match(status.text, /^Radar 1 terminou, mas não consegui ler o relatório\./);
     assert.ok((status.detail ?? '').includes(`artefato: artefatos:${job.id}`));
     assert.equal(readerLlm.calls.length, 0, 'status vem do banco, não do modelo');
   });

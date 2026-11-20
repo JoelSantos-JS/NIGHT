@@ -238,6 +238,9 @@ describe('comandos de Radar, vídeo e oferta (F06) e status de trabalho (F07)', 
       ['use o radar pra mim', 'low ticket'],
       ['quero que você pesquise produtos de lowticket', 'low ticket'],
       ['usa o radar e procura ofertas de emagrecimento', 'emagrecimento'],
+      // Uso real 20/11 (radar 2): o nicho virou ". Quero que para pesquisar oferta low tickets".
+      ['Então, NIGHT, faça a pesquisa pra mim. Quero que use o radar para pesquisar oferta low tickets', 'low ticket'],
+      ['roda o radar para pesquisar ofertas de emagrecimento', 'emagrecimento'],
     ];
     for (const [text, query] of cases) {
       assert.deepEqual(ruleIntent(text, PROJECTS), { kind: 'radar-search', query }, text);
@@ -248,6 +251,19 @@ describe('comandos de Radar, vídeo e oferta (F06) e status de trabalho (F07)', 
     }
     // "logistics" não é low-ticket.
     assert.notEqual(ruleIntent('pesquisa empresas de logistics', PROJECTS)?.kind, 'radar-search');
+  });
+
+  test('link colado vai para a pesquisa, que abre a página (uso real 20/11)', () => {
+    const so = ruleIntent('https://adflow.digitaladexpert.de/?utm_source=chatgpt.com', PROJECTS);
+    assert.equal(so?.kind, 'research');
+    assert.match(so?.kind === 'research' ? so.query : '', /^Abre este link .*: https:\/\/adflow\.digitaladexpert\.de\/\?utm_source=chatgpt\.com$/);
+    const comTexto = ruleIntent('olha esse site e me diz os recursos https://utmify.com.br', PROJECTS);
+    assert.deepEqual(comTexto, { kind: 'research', query: 'olha esse site e me diz os recursos https://utmify.com.br' });
+    // Link de oferta continua sendo link de oferta.
+    assert.notEqual(ruleIntent('a página da oferta 1 é https://exemplo.com/vendas', PROJECTS)?.kind, 'research');
+    assert.notEqual(ruleIntent('não abre esse link https://exemplo.com', PROJECTS)?.kind, 'research');
+    // Pedido de código com link continua código (revisão do Codex).
+    assert.equal(ruleIntent('pede pro claude corrigir o bug no parser desta URL https://exemplo.com/api no Soaken', PROJECTS)?.kind, 'coding-task');
   });
 
   test('video-create em PT e EN', () => {

@@ -419,13 +419,17 @@ function trimQueryTail(query: string): string {
 
 /** Tira o complemento de "ofertas de X" / "radar sobre X" e devolve o nicho. */
 function radarQuery(text: string): string {
-  const m = text.match(/\b(?:ofertas?|offers?|radar)\b\s*(?:de|do|da|dos|das|para|pra|sobre|on|for|about|em|in)\s+(.+)$/i);
+  // A última ocorrência: "roda o radar para pesquisar ofertas de X" → "X", não "pesquisar ofertas de X".
+  const m = text.match(/^.*\b(?:ofertas?|offers?|radar)\b\s*(?:de|do|da|dos|das|para|pra|sobre|on|for|about|em|in)\s+(.+)$/i);
   if (m?.[1]) return trimQueryTail(m[1]);
+  // O ÚLTIMO verbo de busca: "faça a pesquisa pra mim. Quero que use o radar para pesquisar oferta low tickets"
+  // tem dois, e o nicho vem depois do segundo (uso real 20/11: o primeiro deixava a frase toda como nicho).
   return trimQueryTail(text
-    .replace(/^.*?\b(?:vasculha|vasculhe|vasculhar|procura|procure|procurar|busca|busque|buscar|roda|rode|rodar|pesquisa|pesquise|pesquisar|minera|minere|minerar|search|find|look for|run)\b/i, '')
+    .replace(/^.*\b(?:vasculha|vasculhe|vasculhar|procura|procure|procurar|busca|busque|buscar|roda|rode|rodar|pesquisa|pesquise|pesquisar|minera|minere|minerar|search|find|look for|run)\b/i, '')
     .replace(/^\s*(?:o|a|as|os|the)\s+/i, '')
     .replace(/^\s*(?:ofertas?|offers?|radar)\b/i, '')
     .replace(/^\s*(?:de|do|da|para|pra|sobre|on|for|about)\s+/i, '')
+    .replace(/^[\s,.;:!?–—-]+/u, '')
     .trim());
 }
 
@@ -465,7 +469,7 @@ function radarSearchIntent(text: string, n: string): Intent | null {
   if (!byName && !lowTicket && (!hasTarget || !verb)) return null;
   const limpo = text.replace(/\bradar de ofertas\b/gi, 'radar').replace(/\s+(?:pra|para) mim\b/gi, '').replace(/[?]+$/, '')
     // "use o radar e pesquise X": o "use o radar" não é nicho.
-    .replace(/\b(?:usa|use|usar|usando|liga|ligue|abre|abra)\b.{0,10}\bradar\b\s*(?:e\s+)?/i, '');
+    .replace(/\b(?:usa|use|usar|usando|liga|ligue|abre|abra)\b.{0,10}\bradar\b\s*(?:(?:e|para|pra)\s+)?/i, '');
   const query = radarQuery(limpo);
   if (NICHE_FILLER.test(query.trim())) return { kind: 'radar-search', query: RADAR_DEFAULT_NICHE };
   // "produtos de lowticket" sem subnicho: o nicho é low-ticket mesmo.
@@ -644,6 +648,14 @@ export function ruleIntent(rawText: string, projectNames: string[]): Intent | nu
   if (FIND.test(n) && FOLDERISH.test(n)) return { kind: 'find-folder', target: targetName(text, FIND) };
   const winPath = text.match(WIN_PATH)?.[1];
   if (winPath && SET_PATH.test(n)) return { kind: 'set-project-path', projectHint: project, path: winPath.replace(/[.,;]+$/, '') };
+  // Link colado (uso real 20/11): a conversa não tem internet e respondia "cola o texto da página aqui". Quem abre
+  // página é a pesquisa. Link de oferta ("a página da oferta 1 é https://…") já saiu acima.
+  const url = text.match(WEB_URL)?.[0];
+  // Pedido de código com link ("corrige o parser desta URL https://…") continua tarefa de código (revisão do Codex).
+  if (url && !NEGATED.test(n) && !DELEGATE.test(n) && !(CODE_VERB.test(n) && CODE_NOUN.test(n))) {
+    const soLink = text.trim() === url;
+    return { kind: 'research', query: soLink ? `Abre este link e me diz o que tem nele (o que é, recursos, preços, para quem é): ${url}` : text.trim() };
+  }
   // "Vasculha no seu próprio código...": pesquisa no PC (só leitura), não tarefa de código (D-017).
   if (PC_SEARCH.test(n) && PC_PLACE.test(n)) return { kind: 'research', query: text.trim() };
   // Pesquisa explícita antes de "o que mudou": "pesquisa o que mudou na versão X" é pesquisa.
@@ -671,7 +683,8 @@ const CLASSIFY_PROMPT = `Classifique o pedido do usuário. Responda SÓ com JSON
 
 /** Onde procurar: arquivos do PC (o NIGHT ou um projeto), sem internet (D-017). */
 const PC_PLACE = /\b(seu|teu|nosso|meu|proprio|do night|no night)\b.{0,20}\b(codigo|repositorio|projeto|arquivos?|pastas?)\b|\bno codigo\b|\bnos arquivos\b|\bno repositorio\b|\bna pasta\b|\bno (meu )?(pc|computador)\b|\b(your|our|my) (own )?(code|codebase|repo|repository|files?)\b|\bin the (code|codebase|repo|files)\b/;
-const PC_SEARCH = /\b(vasculh\w*|procur\w*|olh\w*|verifi\w*|busc\w*|ach\w*|pesquis\w*|ve|veja|search|look|check|find)\b/;
+const WEB_URL = /https?:\/\/[^\s<>"']+/i;
+const PC_SEARCH =/\b(vasculh\w*|procur\w*|olh\w*|verifi\w*|busc\w*|ach\w*|pesquis\w*|ve|veja|search|look|check|find)\b/;
 const WEB_PLACE = /\b(na internet|na web|online|no google|em sites?|nos sites|na documentacao oficial|on the web|on the internet)\b/;
 const BOTH_PLACES = /\b(os dois|ambos|nos dois|both)\b/;
 
