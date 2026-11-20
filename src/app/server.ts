@@ -42,11 +42,11 @@ const FOCO_CURTO: Record<Tela, string> = {
 };
 
 const EXEMPLOS_TELA: Record<Tela, string[]> = {
-  night: ['O que tá rodando?', 'Pesquisa pra mim a cotação do dólar hoje', 'Salva essa ideia para o Soaken: modo escuro'],
+  night: ['O que tá rodando?', 'Pesquisa pra mim a cotação do dólar hoje', 'Salva essa ideia: modo escuro no app'],
   radar: ['Vasculha ofertas de fone bluetooth', 'Mostra a oferta 1', 'Por que ela é boa?'],
   produto: ['Gera o produto da oferta 1', 'A página da oferta 1 é https://', 'O checkout da oferta 1 é https://'],
   campanha: ['Monta a campanha da oferta 1', 'Como está a campanha da oferta 1?'],
-  codigo: ['Pede pro Claude corrigir o bug do login no Soaken', 'Mostra as mudanças', 'Roda o AWS Prep pra mim'],
+  codigo: ['Pede pro Claude corrigir o bug do login no meu projeto', 'Mostra as mudanças', 'Roda o meu projeto pra mim'],
   video: ['Cria um vídeo sobre café gelado', 'Como está o vídeo 1?'],
 };
 

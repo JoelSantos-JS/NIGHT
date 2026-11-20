@@ -4,7 +4,7 @@
 
 Exemplos de pedido:
 - "Pesquisa pra mim …"
-- "Salva essa ideia para o Soaken: …"
+- "Salva essa ideia: …"
 - "O que tá rodando?"
 
 ## Como trabalhar

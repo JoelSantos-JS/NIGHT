@@ -3,9 +3,9 @@
 **Foco desta tela:** Tarefas de código para o Claude ou o Codex, cada uma numa cópia separada do projeto, com revisão do outro agente. Aprovar o merge só no painel.
 
 Exemplos de pedido:
-- "Pede pro Claude corrigir o bug do login no Soaken"
+- "Pede pro Claude corrigir o bug do login no meu projeto"
 - "Mostra as mudanças"
-- "Roda o AWS Prep pra mim" (rodar confirma no painel)
+- "Roda o meu projeto pra mim" (rodar confirma no painel)
 
 ## Como trabalhar
 
