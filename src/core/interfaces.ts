@@ -67,6 +67,8 @@ export type Intent =
   | { kind: 'coding-task'; projectHint: string | null; objective: string; agent: AgentName | null }
   /** Fato atual ou pesquisa: vai para um modelo menor do Codex/Claude com busca na internet (D-009). */
   | { kind: 'research'; query: string }
+  | { kind: 'openbot-task'; agent: string; task: string }   // "manda pro Radar do OpenBot pesquisar X"
+  | { kind: 'openbot-status' }                             // "o que o OpenBot fez?"
   /** "Roda o AWS Prep pra mim": acha a pasta, diz como vai rodar e só roda depois do "pode". */
   | { kind: 'run-project'; target: string }
   /** "Procura a pasta X no desktop": só procura e cadastra como projeto. */

@@ -33,6 +33,7 @@ import { ClaudeMcpMetaReader } from '../ads/meta-reader.ts';
 import { PgOfferLinks } from '../lowticket/links.ts';
 import { LowticketWorker } from '../lowticket/worker.ts';
 import { MetaMcpAdSource } from '../radar/meta-mcp-source.ts';
+import { OpenBotEspelho } from '../openbot/espelho.ts';
 
 /** Pasta de dados do NIGHT; cada parte fica fora do repositório. */
 export interface NightPaths {
@@ -226,7 +227,11 @@ export async function createNight(opts: CreateNightOptions = {}) {
   // NIGHT_CHAT=local continua só o Qwen: a reserva de conversa só entra quando há conversa externa.
   const reserves = chatters.length > 0 && hasDeepSeek ? [new DeepSeekChat()] : [];
   const researchReserves = hasDeepSeek ? [new DeepSeekResearch()] : [];
+  // Ligação com o OpenBot pela API local de automação: tarefas para os agentes dele, pendências e diário das telas.
+  const openbot = new OpenBotEspelho();
+  openbot.iniciar();
   const coordinatorOptions: CoordinatorOptions = {
+    openbot,
     researchers,
     tasks: unlock ? tasks : undefined,
     chatters,
@@ -252,6 +257,7 @@ export async function createNight(opts: CreateNightOptions = {}) {
   const close = async (): Promise<void> => {
     if (fechado) return;
     fechado = true;
+    openbot.parar();
     await Promise.allSettled([
       radarStore.close(),
       offerLinks.close(),
@@ -270,8 +276,9 @@ export async function createNight(opts: CreateNightOptions = {}) {
     { nome: 'DeepSeek (parecer e reserva)', ok: hasDeepSeek, detalhe: hasDeepSeek ? 'chave encontrada' : 'sem chave: defina DEEPSEEK_API_KEY ou ~/.deepseek/api_key' },
     { nome: 'Meta: leitura da Biblioteca (Radar)', ok: metaReadTools.length > 0, detalhe: metaReadTools.length ? metaReadTools.join(', ') : 'falta ligar o conector e definir NIGHT_META_READ_TOOLS (M01)' },
     { nome: 'Meta: conta de anúncios (campanha)', ok: metaAdAccount !== null, detalhe: metaAdAccount ?? 'falta NIGHT_META_AD_ACCOUNT' },
+    { nome: 'OpenBot (automação)', ok: openbot.estado().ligado, detalhe: openbot.estado().motivo ?? `agentes: ${openbot.estado().agentes.map((a) => a.nome).join(', ')}` },
     { nome: 'OpenBot (telas)', ok: existsSync(join(process.env.LOCALAPPDATA ?? '', 'Programs', 'OpenBot', 'OpenBot.exe')), detalhe: 'telas pelo servidor MCP; pacote com pnpm night:telas' },
     { nome: 'Executa trabalhos nesta janela', ok: Boolean(unlock), detalhe: unlock ? 'sim' : 'outra janela do NIGHT tem a trava' },
   ];
-  return { memory, llm, llmOk, tasks, stuck, runsTasks: Boolean(unlock), night, makeCoordinator, radar: radarStore, connections, close };
+  return { memory, llm, llmOk, tasks, stuck, runsTasks: Boolean(unlock), night, makeCoordinator, radar: radarStore, connections, openbot, close };
 }

@@ -9,13 +9,13 @@ import { startNightServerFor } from './server-start.ts';
 const DIM = '\u001b[2m';
 const RESET = '\u001b[0m';
 
-const { memory, llm, llmOk, night, tasks, stuck, runsTasks, close, makeCoordinator, radar, connections } = await createNight();
+const { memory, llm, llmOk, night, tasks, stuck, runsTasks, close, makeCoordinator, radar, connections, openbot } = await createNight();
 if (!runsTasks) console.log('Outra janela do Night já cuida das tarefas de código; esta conversa, pesquisa e salva ideias.');
 tasks.on('update', (u) => console.log(u.important ? `\nnight › ${u.message}` : `${DIM}[tarefa ${u.task.id}] ${u.message}${RESET}`));
 if (stuck.length) console.log(`${stuck.length} tarefa(s) estavam rodando quando o Night fechou; marquei como falha.`);
 if (!llmOk) console.error(`Aviso: o Ollama não respondeu ou não tem o modelo ${llm.model}. A conversa vai falhar até ele subir.`);
 // Telas do OpenBot e painel: só na janela que roda os trabalhos.
-const server = runsTasks ? await startNightServerFor({ makeCoordinator, memory, ofertas: radar, tasks, conexoes: connections }) : null;
+const server = runsTasks ? await startNightServerFor({ makeCoordinator, memory, ofertas: radar, tasks, conexoes: connections, openbot }) : null;
 
 function show(reply: Reply, startedAt: number) {
   const secs = ((performance.now() - startedAt) / 1000).toFixed(1);
@@ -37,7 +37,8 @@ try {
       const reply = await night.handle(line);
       show(reply, t);
       // No modo texto a pesquisa é esperada aqui; no modo voz ela chega enquanto a conversa continua.
-      if (reply.followUp) show(await reply.followUp, t);
+      if (reply.followUp && reply.intent === 'openbot-task') void reply.followUp.then((r) => { show(r, t); rl.prompt(); }, () => {});
+      else if (reply.followUp) show(await reply.followUp, t);
     }
     rl.prompt();
   }

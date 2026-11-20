@@ -5,7 +5,7 @@
 //   OpenAI e devolve a resposta (SDP). O ÁUDIO vai direto do navegador para a OpenAI; o NIGHT não o vê.
 // - A voz entrega cada pedido falado a uma "ponte" (um modelo pequeno do Codex), que só pode chamar uma
 //   ferramenta: pedir_ao_night. O NIGHT responde e a voz fala a resposta.
-// - O pedido passa por modelos da OpenAI antes de chegar aqui, então entra com origem 'tela': aprovar,
+// - O pedido passa por modelos da OpenAI antes de chegar aqui, então entra com origem 'voz': aprovar,
 //   cancelar e campanha com R$ devolvem o link do painel, nunca executam pela voz ao vivo.
 // - A ponte não tem shell, arquivos, internet nem MCP do Joel: tudo desligado no thread/start, e ela roda
 //   numa pasta temporária vazia, só leitura, sem aprovações.

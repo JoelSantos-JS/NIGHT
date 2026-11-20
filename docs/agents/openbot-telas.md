@@ -26,6 +26,7 @@ Joel ──clica──▶ painel http://127.0.0.1:4517/painel ──▶ mesmo co
 - `night_pedir {tela, texto}`: repassa o pedido ao NIGHT. Se a resposta passar de 90 s, ela vira novidade.
 - `night_novidades {tela}`: mostra respostas de pesquisa que chegaram, trabalhos que mudaram e avisos das tarefas de código.
 - `night_trabalhos {tela}`: lista os trabalhos da tela, lidos do banco.
+- `night_relatar {tela, texto}`: registra no diário do NIGHT, em 1 a 3 linhas, o que a tela acabou de fazer (até 1000 caracteres).
 
 **Quem sobe o servidor:** a janela do NIGHT que roda os trabalhos.
 - `pnpm night:voz` e `pnpm night` sobem o servidor sozinhos.
@@ -69,6 +70,35 @@ Joel ──clica──▶ painel http://127.0.0.1:4517/painel ──▶ mesmo co
   - "aprovo montar a campanha da oferta 1 com R$ 20 por dia", vindo da tela Campanha, voltou com o link do painel e nada foi criado.
 - O Claude Code (`claude -p --mcp-config`, tipo `http`) achou e chamou `night_trabalhos`. É o mesmo cliente que o OpenBot usa por baixo.
 - Testes: `tests/server.test.ts`, mais a guarda em `tests/coordinator.test.ts` e `tests/projects.test.ts`.
+
+## Ligação com o OpenBot (20/11)
+
+**Diário das telas.** Agora cada tela conta o que fez.
+- A ferramenta é `night_relatar {tela, texto}`.
+- O texto tem de 1 a 3 linhas: o que o Joel pediu e o que aconteceu. Cabe até 1000 caracteres.
+- A tela também conta o que fez sem o NIGHT: pesquisa, arquivo, comando aprovado pelo Joel.
+- O NIGHT guarda no diário e mostra no painel, seção OpenBot.
+- Nada de chave, senha, token, e-mail ou dado de cliente no relato.
+
+**O NIGHT manda tarefa para os agentes do OpenBot.** O Joel pode dizer: "manda pro Radar do OpenBot pesquisar X".
+- O NIGHT usa a API local de automação do OpenBot.
+- Quando a resposta chega, o NIGHT mostra ao Joel.
+- Isso só vale dito pelo Joel no NIGHT. Vindo de uma tela, o NIGHT recusa.
+
+**Ligar em cada agente do OpenBot:**
+- Configurações → Permissões → **Local scripts** ligado. Vem desligado por padrão.
+- O OpenBot escreve `url` e `token` em `%APPDATA%\OpenBot\automation`.
+- O NIGHT lê esses arquivos e não mostra o token.
+- O limite do OpenBot é de 30 mensagens por hora, por padrão.
+
+**Aprovações e perguntas:**
+- Aprovações pendentes dos agentes aparecem no painel do NIGHT, seção OpenBot.
+- Só dá para aceitar ou recusar ali.
+- Perguntas dos agentes, só no OpenBot.
+
+**Depois de mudar as telas:**
+1. Rode `pnpm night:telas`.
+2. Importe de novo o zip no OpenBot.
 
 ## Depois (fase 3)
 

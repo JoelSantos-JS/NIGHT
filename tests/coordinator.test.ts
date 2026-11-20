@@ -6,6 +6,8 @@ import { forSpeech, nightDataRoot, NightCoordinator } from '../src/app/coordinat
 import { QuotaError } from '../src/agents/research.ts';
 import type { Job, Project } from '../src/core/types.ts';
 import type { JobRunner } from '../src/jobs/runner.ts';
+import type { Memory } from '../src/core/interfaces.ts';
+import type { OpenBotLike } from '../src/openbot/tipos.ts';
 import { PgMemory } from '../src/memory/pg-memory.ts';
 import { scoreCandidate } from '../src/radar/score.ts';
 import { PgRadarStore } from '../src/radar/store.ts';
@@ -849,5 +851,83 @@ describe('conversa com a oferta do Radar (R06)', () => {
     assert.equal(noJob1.length, 1, 'o evento foi para o job do candidato');
     assert.match(noJob1[0]!.message, /oferta aprovada pelo Joel/);
     assert.equal(noJob2.length, 0, 'o job de mesmo número da oferta não foi tocado');
+  });
+});
+
+describe('ligação com o OpenBot pelo coordenador', () => {
+  /** Memória mínima: estas falas só leem a conversa recente e gravam o route_log. */
+  const memoriaFalsa = () => ({
+    recentActivity: async () => [],
+    logRoute: async () => {},
+    listProjects: async () => [],
+  }) as unknown as Memory;
+
+  class OpenBotFalso implements OpenBotLike {
+    enviados: { agente: string; tarefa: string }[] = [];
+    resumos = 0;
+    depois = Promise.resolve('O Radar do OpenBot respondeu: café pronto');
+
+    async enviar(agente: string, tarefa: string): Promise<{ texto: string; depois?: Promise<string> }> {
+      this.enviados.push({ agente, tarefa });
+      return { texto: 'Mandei para o Radar do OpenBot. Te aviso quando ele responder.', depois: this.depois };
+    }
+
+    async resumo(): Promise<string> {
+      this.resumos += 1;
+      return 'resumo do OpenBot';
+    }
+  }
+
+  const montar = (openbot?: OpenBotLike) => {
+    const llm = new FakeLlm(() => 'resposta do modelo local');
+    return new NightCoordinator(memoriaFalsa(), new NightRouter(llm, async () => []), llm, openbot ? { openbot } : {});
+  };
+
+  const frase = 'manda pro Radar do OpenBot pesquisar café';
+
+  test('a) pedido do dono manda a tarefa e o followUp traz a resposta', async () => {
+    const openbot = new OpenBotFalso();
+    const r = await montar(openbot).handle(frase, undefined, { origem: 'dono' });
+    assert.equal(r.intent, 'openbot-task');
+    assert.deepEqual(openbot.enviados, [{ agente: 'Radar', tarefa: 'pesquisar café' }]);
+    assert.equal(r.text, 'Mandei para o Radar do OpenBot. Te aviso quando ele responder.');
+    assert.ok(r.followUp);
+    assert.equal((await r.followUp!).text, 'O Radar do OpenBot respondeu: café pronto');
+  });
+
+  test('b) pedido de tela não manda tarefa a outro agente do OpenBot', async () => {
+    const openbot = new OpenBotFalso();
+    const r = await montar(openbot).handle(frase, undefined, { origem: 'tela' });
+    assert.match(r.text, /não manda tarefa para outro agente do OpenBot/);
+    assert.equal(openbot.enviados.length, 0);
+  });
+
+  test('c) pedido da voz manda a tarefa', async () => {
+    const openbot = new OpenBotFalso();
+    const r = await montar(openbot).handle(frase, undefined, { origem: 'voz' });
+    assert.deepEqual(openbot.enviados, [{ agente: 'Radar', tarefa: 'pesquisar café' }]);
+    assert.match(r.text, /^Mandei para o Radar/);
+  });
+
+  test('d) decisão vinda da voz é bloqueada, com texto próprio', async () => {
+    const painelUrl = 'http://127.0.0.1:4517/painel';
+    const daVoz = await montar(new OpenBotFalso()).handle('aprovo', undefined, { origem: 'voz', painelUrl });
+    const daTela = await montar(new OpenBotFalso()).handle('aprovo', undefined, { origem: 'tela', painelUrl });
+    assert.match(daVoz.text, /^Decisão não vale pela voz ao vivo\./);
+    assert.match(daVoz.text, new RegExp(painelUrl));
+    assert.match(daTela.text, /^Essa decisão é do Joel e não vale pela tela\./);
+  });
+
+  test('e) "o que o openbot fez?" chama o resumo', async () => {
+    const openbot = new OpenBotFalso();
+    const r = await montar(openbot).handle('o que o openbot fez?');
+    assert.equal(r.intent, 'openbot-status');
+    assert.equal(openbot.resumos, 1);
+    assert.equal(r.text, 'resumo do OpenBot');
+  });
+
+  test('f) sem a opção openbot, a ligação não está ligada', async () => {
+    const r = await montar().handle(frase);
+    assert.equal(r.text, 'A ligação com o OpenBot não está ligada neste NIGHT.');
   });
 });

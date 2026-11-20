@@ -18,6 +18,7 @@ import type { TaskUpdate } from '../agents/scheduler.ts';
 import type { Decisao, HandleOptions, Reply } from './coordinator.ts';
 import { ICONE_NIGHT, paginaPainel } from './painel-ui.ts';
 import { VozAoVivo, type RespostaNight, type RpcCliente } from './voz-ao-vivo.ts';
+import type { EstadoOpenBot } from '../openbot/tipos.ts';
 
 /** Uma tela por agente no OpenBot; cada uma tem a sua conversa no NIGHT. */
 export const TELAS = ['night', 'radar', 'produto', 'campanha', 'codigo', 'video'] as const;
@@ -78,6 +79,13 @@ export interface ServerDeps {
   tasks?: { on(event: 'update', fn: (u: TaskUpdate) => void): unknown };
   /** Quadro de conexões do painel (banco, modelos, Meta, OpenBot): só "ligado / falta o quê". */
   conexoes?: () => Promise<{ nome: string; ok: boolean; detalhe: string }[]>;
+  /** Espelho do OpenBot: agentes, tarefas mandadas, pendências e o diário das telas. */
+  openbot?: {
+    estado(): EstadoOpenBot;
+    relatar(tela: string, texto: string): void;
+    responderAprovacao(agenteId: string, pedidoId: string, decisao: 'accept' | 'decline'): Promise<string>;
+    ouvir?(fn: (texto: string) => void): void;
+  };
 }
 
 export interface ServerOptions {
@@ -130,6 +138,19 @@ const TOOLS = [
       required: ['tela'],
     },
   },
+  {
+    name: 'night_relatar',
+    description: 'Registra no diário do NIGHT, em 1 a 3 linhas, o que esta tela acabou de fazer, para o Joel ver no painel (seção OpenBot). '
+      + 'Nunca ponha chave, senha, token, e-mail ou dado de cliente.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tela: { type: 'string', enum: [...TELAS] },
+        texto: { type: 'string', description: 'Resumo curto: o que o Joel pediu e o que aconteceu.' },
+      },
+      required: ['tela', 'texto'],
+    },
+  },
 ] as const;
 
 export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {}): Promise<NightServer> {
@@ -150,6 +171,9 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
   };
   const vistoEm = new Map<Tela, number>(TELAS.map((t) => [t, Date.now()]));
   deps.tasks?.on('update', (u) => { if (u.important) avisar('codigo', u.message); });
+  // Resposta de agente do OpenBot e pendência nova vão para as novidades da tela NIGHT. A conversa do painel já
+  // recebe a resposta pelo followUp do pedido, e a seção OpenBot mostra tudo; pôr aqui também duplicaria.
+  deps.openbot?.ouvir?.((texto) => avisar('night', texto));
 
   let port = opts.port ?? DEFAULT_PORT;
   const origemPropria = () => [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
@@ -217,6 +241,14 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
       return { text: await pedir(t, texto) };
     }
     if (nome === 'night_novidades') return { text: await verNovidades(t) };
+    if (nome === 'night_relatar') {
+      const texto = typeof args.texto === 'string' ? args.texto.trim() : '';
+      if (!texto) return { text: 'texto vazio', isError: true };
+      if (texto.length > 1000) return { text: 'relato longo demais (máximo 1000 caracteres)', isError: true };
+      if (!deps.openbot) return { text: 'O diário do OpenBot não está ligado neste NIGHT.', isError: true };
+      deps.openbot.relatar(t, texto);
+      return { text: 'Registrado no diário do NIGHT.' };
+    }
     if (nome === 'night_trabalhos') return { text: await listarTrabalhos(t) };
     return { text: `ferramenta desconhecida: ${nome}`, isError: true };
   }
@@ -237,6 +269,7 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
           capabilities: { tools: {} },
           serverInfo: { name: 'night', version: '0.0.1' },
           instructions: 'Repasse o pedido do Joel com night_pedir, sem reescrever, e mostre a resposta como veio. '
+            + 'Depois de responder, registre em 1 linha com night_relatar o que ele pediu e o que aconteceu (sem chave, senha ou dado de cliente). '
             + `Decisões são só do Joel, no painel: ${painelUrl()}`,
         });
       }
@@ -341,6 +374,7 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
       decisoes: await decisoesPendentes(),
       conexoes: deps.conexoes ? await deps.conexoes() : [],
       conversas: Object.fromEntries(conversas),
+      openbot: deps.openbot?.estado() ?? null,
     };
   }
 
@@ -376,12 +410,12 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
   // ---------- Voz ao vivo ----------
 
   /**
-   * Pedido falado: passou por modelos da OpenAI, então entra como tela (decisão volta com o link do painel).
+   * Pedido falado: passou por modelos da OpenAI, então entra com origem 'voz' (decisão volta com o link do painel).
    * A voz recebe só `text`; o `detail` (diff, relatório) fica no painel e não vai para a OpenAI.
    */
   async function pedirPorVoz(texto: string): Promise<RespostaNight> {
     falar('night', { quem: 'voce', texto: `🎙 ${texto}` });
-    const r = await coord('voz').handle(texto, undefined, { origem: 'tela', painelUrl: painelUrl() });
+    const r = await coord('voz').handle(texto, undefined, { origem: 'voz', painelUrl: painelUrl() });
     falar('night', { quem: 'night', texto: textoDe(r) });
     const paraVoz = (x: Reply) => (x.detail ? `${x.text} O detalhe está no painel.` : x.text);
     const depois = r.followUp?.then((tarde) => { falar('night', { quem: 'night', texto: textoDe(tarde) }); return paraVoz(tarde); });
@@ -443,7 +477,7 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
     if (url.pathname === '/painel' && req.method === 'GET') return enviar(res, 200, 'text/html; charset=utf-8', paginaPainel(token));
     if (url.pathname === '/icone.svg' && req.method === 'GET') return enviar(res, 200, 'image/svg+xml', ICONE_NIGHT);
     if (url.pathname === '/api/estado' && req.method === 'GET') return enviar(res, 200, 'application/json', JSON.stringify(await estadoPainel()));
-    const rotasComToken = ['/api/pedir', '/api/decidir', '/api/voz/iniciar', '/api/voz/parar', '/api/voz/eventos'];
+    const rotasComToken = ['/api/pedir', '/api/decidir', '/api/voz/iniciar', '/api/voz/parar', '/api/voz/eventos', '/api/openbot/responder'];
     if (rotasComToken.includes(url.pathname) && req.method === 'POST') {
       // Só do próprio painel (Origin) e com o token deste início do servidor.
       if (origin === undefined) return enviarJson(res, 403, { texto: 'origem ausente' });
@@ -456,6 +490,15 @@ export async function startNightServer(deps: ServerDeps, opts: ServerOptions = {
       }
       if (!tokenConfere(typeof dados.token === 'string' ? dados.token : null, token)) {
         return enviarJson(res, 403, { texto: 'token inválido; recarregue o painel' });
+      }
+      if (url.pathname === '/api/openbot/responder') {
+        // Aprovação de agente do OpenBot: só daqui (painel, token), nunca por tela ou voz.
+        const { agenteId, pedidoId, decisao } = dados;
+        if (typeof agenteId !== 'string' || typeof pedidoId !== 'string' || (decisao !== 'accept' && decisao !== 'decline')) {
+          return enviarJson(res, 400, { texto: 'pedido inválido' });
+        }
+        if (!deps.openbot) return enviarJson(res, 400, { texto: 'O OpenBot não está ligado neste NIGHT.' });
+        return enviarJson(res, 200, { texto: await deps.openbot.responderAprovacao(agenteId, pedidoId, decisao) });
       }
       if (url.pathname.startsWith('/api/voz/')) {
         const r = await rotaVoz(url.pathname, dados);

@@ -13,7 +13,7 @@ A passagem anterior, de 17/11, tem o detalhe de Radar, low-ticket, campanha na M
 
 - **Tudo commitado e no GitHub:** https://github.com/JoelSantos-JS/NIGHT, `main` em `8b79fea`.
   - **O repositório está PÚBLICO.** O Joel decidiu subir assim e disse que muda para privado depois. Enquanto estiver público, **nunca commite chave, e-mail ou dado pessoal**.
-- **Testes:** `pnpm test` roda 717 testes (19/11) e o `pnpm typecheck` está limpo.
+- **Testes:** `pnpm test` roda 751 testes (20/11) e o `pnpm typecheck` está limpo.
   - De 1 a 4 testes do agendador (`tests/scheduler.test.ts`, que esperam por tempo) falham de forma alternada quando o PC está carregado (voz, OpenBot e Night abertos). Rodando de novo, passam. Ninguém mexeu nesse código.
 - **Codex sem cota:** a cota semanal da conta do Codex está em 100% até **sexta, 20/11, às 13:57**. O OpenBot lê esse número e se bloqueia sozinho; o NIGHT não lê e segue chamando o Luna até a OpenAI recusar (aí cai no Claude).
 - **Chave do Groq:** passou pelo chat. O Joel precisa trocá-la no painel do Groq e salvar a nova em `C:\Users\Joel\.groq\api_key`.
@@ -62,17 +62,29 @@ A passagem anterior, de 17/11, tem o detalhe de Radar, low-ticket, campanha na M
 - Botão **Voz ao vivo** no topo do painel (`/painel`): a voz da OpenAI pelo login do ChatGPT, como no OpenBot.
   - O áudio vai direto do navegador para a OpenAI. O NIGHT só troca a oferta WebRTC por [src/app/voz-ao-vivo.ts](../src/app/voz-ao-vivo.ts).
   - Uma ponte do Codex (sem shell, arquivos, internet nem MCP) só pode chamar `pedir_ao_night`. A resposta do NIGHT volta falada.
-  - Pedidos entram com origem `'tela'`: decisões (aprovar, cancelar, campanha com R$) devolvem o link do painel.
+  - Pedidos entram com origem `'voz'` (D-019): decisões (aprovar, cancelar, campanha com R$) devolvem o link do painel.
   - Pedido e resposta aparecem na conversa do agente NIGHT no painel; a legenda ao vivo fica embaixo do topo.
-- Codex usado: o oficial 0.170 que o OpenBot baixou (`%APPDATA%OpenBotprovider-runtimescodex`). Outro: `NIGHT_CODEX_LIVE_BIN`.
+- Codex usado: o oficial 0.170 que o OpenBot baixou (`%APPDATA%\OpenBot\provider-runtimes\codex`). Outro: `NIGHT_CODEX_LIVE_BIN`.
 - **Ainda não testada com áudio:** em 19/11 a OpenAI recusou a voz pela cota semanal do Codex (volta 20/11, 13:57). Texto comum passa.
   - Prova sem navegador: `npx tsx scripts/voz-ao-vivo-prova.ts` (tem que dizer "OK ... a OpenAI respondeu a oferta").
 - Tela feita pelo DeepSeek e revisada; ponte, rotas e segurança feitas pelo Claude.
 - No celular o painel já passava da borda direita antes (o botão novo fica nessa parte cortada). Arrumar o layout estreito quando for vender.
 
+### 2.5 NIGHT e OpenBot ligados (D-019, 20/11)
+- **NIGHT manda tarefa:** "manda pro Radar do OpenBot pesquisar X" (voz, terminal, painel ou voz ao vivo). A resposta do agente chega depois e aparece na conversa do NIGHT. Código em [src/openbot/](../src/openbot/).
+- **NIGHT vê o OpenBot:** seção **OpenBot** no painel com agentes, tarefas mandadas, o que espera você (aprovações: Aceitar/Recusar ali; perguntas: só no OpenBot) e o diário das telas (`night_relatar`).
+- Tela do OpenBot não manda tarefa a outro agente (laço) e não decide nada. A voz ao vivo tem origem `'voz'`: manda tarefa, não decide.
+- Estado no OpenBot em 20/11: 6 agentes (NIGHT, Radar, Produto, Campanha, Código no Codex gpt-6-luna; Vídeo no Claude Opus), **nenhum servidor MCP cadastrado** e todos com acesso "full" e controle do computador ligado.
+
 ---
 
 ## 3. Pendências, em ordem
+
+### 3.0b No OpenBot (cliques do Joel, ou do Claude pelo mouse)
+1. Marketplace → Apps → servidor por URL: nome `night`, URL `http://127.0.0.1:4517/mcp`, liberado para as 6 telas.
+2. Em cada agente: Configurações → Permissões → **Local scripts** ligado (sem isso o NIGHT não manda tarefa nem vê pendências).
+3. Em cada agente: acesso com aprovação (não "full") e **controle do computador desligado**.
+4. Testar: no NIGHT, "manda pro Radar do OpenBot dizer oi"; no painel, seção OpenBot mostra a tarefa e a resposta.
 
 ### 3.0 Testar a voz ao vivo (depois de 20/11, 13:57)
 1. `npx tsx scripts/voz-ao-vivo-prova.ts` tem que dar OK.

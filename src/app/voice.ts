@@ -29,13 +29,13 @@ const HALLUCINATIONS = [
 
 // A voz já existe antes do Night porque os vídeos usam o mesmo Kokoro para narrar.
 const speech = new SpeechService();
-const { memory, llm, llmOk, night, tasks, stuck, runsTasks, close, makeCoordinator, radar, connections } = await createNight({
+const { memory, llm, llmOk, night, tasks, stuck, runsTasks, close, makeCoordinator, radar, connections, openbot } = await createNight({
   synth: (text, language, file) => speech.synthesizeToFile(text, language, file),
 });
 if (!runsTasks) console.log('Outra janela do Night já cuida das tarefas de código; esta conversa, pesquisa e salva ideias.');
 if (!llmOk) console.error(`${RED}Aviso: o Ollama não respondeu ou não tem o ${llm.model}. A conversa vai falhar até ele subir.${RESET}`);
 // Telas do OpenBot e painel: só na janela que roda os trabalhos.
-const server = runsTasks ? await startNightServerFor({ makeCoordinator, memory, ofertas: radar, tasks, conexoes: connections }) : null;
+const server = runsTasks ? await startNightServerFor({ makeCoordinator, memory, ofertas: radar, tasks, conexoes: connections, openbot }) : null;
 
 console.log('Carregando a voz (Kokoro + Whisper), leva uns 30 s...');
 const ready = await speech.start();

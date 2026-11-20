@@ -26,6 +26,7 @@ const ICONES: Record<string, string> = {
   video: '<rect x="4" y="6" width="16" height="12" rx="2"/><path d="M11 10v4l3-2-3-2Z"/>',
   decisoes: '<path d="M5 12l4 4 10-10"/>',
   conexoes: '<path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/>',
+  openbot: '<rect x="4" y="6" width="16" height="13" rx="3"/><path d="M12 3v3"/><path d="M9 12h.01"/><path d="M15 12h.01"/><path d="M9 16h6"/>',
   enviar: '<path d="M5 12h14"/><path d="M13 6l6 6-6 6"/>',
   mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/><path d="M9 21h6"/>',
 };
@@ -46,6 +47,7 @@ export function paginaPainel(token: string): string {
     <button class="trilho-btn ativo" data-secao="agentes" title="Agentes" aria-label="Agentes">${svg('radar')}</button>
     <button class="trilho-btn" data-secao="decisoes" title="Decisões" aria-label="Decisões">${svg('decisoes')}<span class="contador" id="contador" hidden></span></button>
     <button class="trilho-btn" data-secao="conexoes" title="Conexões" aria-label="Conexões">${svg('conexoes')}</button>
+    <button class="trilho-btn" data-secao="openbot" title="OpenBot" aria-label="OpenBot">${svg('openbot')}<span class="contador" id="contador-openbot" hidden></span></button>
   </nav>
   <aside class="lista" aria-label="Agentes">
     <div class="lista-topo"><span>Agentes</span></div>
@@ -143,6 +145,22 @@ button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
 .estado-ok,.estado-falta{flex:none;width:9px;height:9px;border-radius:50%;margin-top:6px}.estado-ok{background:var(--ok)}.estado-falta{background:var(--perigo)}
 .conexao small{display:block;color:var(--sub)}
 .retorno{margin:0 0 14px}
+.bloco ol{margin:0;padding-left:18px}
+.bloco h3{margin:10px 0 4px;font-size:13px;font-weight:600;color:var(--txt)}
+.openbot-item{padding:8px 0;border-bottom:1px solid var(--borda)}.openbot-item:last-child{border:0}
+.openbot-topo{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12.5px;color:var(--sub)}
+.openbot-agente{color:var(--txt);font-weight:600}
+.openbot-texto{margin:2px 0 0;overflow-wrap:anywhere}
+.pendente{padding:8px 0;border-bottom:1px solid var(--borda)}.pendente:last-child{border:0}
+.pendente p{margin:2px 0 0;overflow-wrap:anywhere}
+.pendente-agente{font-weight:600}
+.status{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--superficie2);color:var(--sub);white-space:nowrap}
+.status.st-ok{background:rgba(79,194,138,.16);color:var(--ok)}
+.status.st-erro{background:rgba(239,107,107,.16);color:var(--perigo)}
+.status.st-andamento{background:rgba(240,180,76,.16);color:var(--alerta)}
+.hora{color:var(--fraco);font-size:12px}
+details{margin-top:6px}summary{cursor:pointer;color:var(--sub);font-size:13px}
+.resposta{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
 :focus-visible{outline:2px solid var(--acento);outline-offset:2px}
 @media (hover:hover) and (pointer:fine){.trilho-btn:hover,.agente:hover{background:var(--superficie)}.sugestao:hover{color:var(--txt);border-color:#3a4050}.btn-primario:hover{opacity:.9}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -164,6 +182,10 @@ button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
 // Script da página: sem dependências; todo texto do servidor entra por textContent.
 const JS = `
 const AGENTES_COR = { night:'#000', radar:'#1f8a70', produto:'#b4672a', campanha:'#b23a6f', codigo:'#4a58c9', video:'#7a4bc2' };
+// Servidor antigo ainda não manda \`openbot\`: o painel mostra o OpenBot como desligado, sem quebrar.
+const OPENBOT_VAZIO = { ligado:false, motivo:'O NIGHT ainda não lê o OpenBot.', agentes:[], tarefas:[], pendentes:[], relatos:[] };
+const STATUS_OPENBOT = { queued:'na fila', starting:'começando', running:'rodando', completed:'pronta', failed:'falhou', interrupted:'interrompida', cancelled:'cancelada' };
+const STATUS_CLASSE = { completed:'st-ok', failed:'st-erro', interrupted:'st-erro', cancelled:'st-erro', running:'st-andamento', starting:'st-andamento' };
 let estado = null;
 let secao = 'agentes';
 let tela = 'night';
@@ -172,6 +194,12 @@ let enviando = false;
 const $ = (s) => document.querySelector(s);
 function el(tag, cls, texto) { const e = document.createElement(tag); if (cls) e.className = cls; if (texto != null) e.textContent = texto; return e; }
 function avatar(t) { const a = el('span', 'avatar'); a.style.background = AGENTES_COR[t] || '#333'; a.innerHTML = ICONES[t] || ''; return a; }
+function quando(em) { const d = new Date(em); return isNaN(d.getTime()) ? 0 : d.getTime(); }
+function horaCurta(em) {
+  const d = new Date(em);
+  if (isNaN(d.getTime())) return String(em || '');
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
 
 async function carregar() {
   try {
@@ -397,10 +425,14 @@ function desenhar() {
   if (!estado) return;
   const n = estado.decisoes.length;
   const c = $('#contador'); c.hidden = n === 0; c.textContent = String(n);
+  const ob = estado.openbot || OPENBOT_VAZIO;
+  const nOb = Array.isArray(ob.pendentes) ? ob.pendentes.length : 0;
+  const co = $('#contador-openbot'); co.hidden = nOb === 0; co.textContent = String(nOb);
   document.querySelectorAll('.trilho-btn').forEach((b) => b.classList.toggle('ativo', b.dataset.secao === secao));
   desenharLista();
   if (secao === 'agentes') desenharAgente();
   else if (secao === 'decisoes') desenharDecisoes();
+  else if (secao === 'openbot') desenharOpenBot();
   else desenharConexoes();
 }
 
@@ -498,6 +530,102 @@ function desenharDecisoes(retorno) {
     }
     c.append(acoes); miolo.append(c);
   }
+  vista.append(rol);
+}
+
+function desenharOpenBot(retorno) {
+  const ob = estado.openbot || OPENBOT_VAZIO;
+  const agentes = Array.isArray(ob.agentes) ? ob.agentes : [];
+  const tarefas = Array.isArray(ob.tarefas) ? ob.tarefas : [];
+  const pendentes = Array.isArray(ob.pendentes) ? ob.pendentes : [];
+  const relatos = Array.isArray(ob.relatos) ? ob.relatos : [];
+  cabeca('OpenBot', null, ob.ligado ? 'ligado' : 'desligado');
+  const vista = $('#vista'); vista.replaceChildren();
+  const rol = el('div', 'rolagem'); const miolo = el('div', 'miolo'); rol.append(miolo);
+  if (retorno) miolo.append(el('div', 'bloco retorno', retorno));
+
+  if (!ob.ligado) {
+    const b = el('div', 'bloco');
+    b.append(el('h2', null, 'OpenBot desligado'), el('p', null, ob.motivo || 'O OpenBot não está ligado.'));
+    b.append(el('h3', null, 'Como ligar'));
+    const passos = el('ol');
+    passos.append(
+      el('li', null, 'Abra o OpenBot.'),
+      el('li', null, 'Em cada agente: Configurações -> Permissões -> Local scripts (ligar).'),
+      el('li', null, 'Para as telas falarem com o NIGHT: Marketplace -> Apps -> servidor por URL, nome night, URL http://127.0.0.1:4517/mcp.'),
+      el('li', null, 'Segurança: em cada agente, acesso com aprovação (não "total") e controle do computador desligado. O NIGHT pode mandar tarefas a eles.'),
+    );
+    b.append(passos); miolo.append(b);
+  }
+
+  const bp = el('div', 'bloco');
+  bp.append(el('h2', null, 'Esperando você'));
+  if (!pendentes.length) bp.append(el('p', 'vazio', 'Nada esperando você.'));
+  for (const p of pendentes) {
+    const item = el('div', 'pendente');
+    item.append(el('div', 'pendente-agente', p.agente), el('p', null, p.texto));
+    if (p.tipo === 'aprovacao') {
+      const acoes = el('div', 'acoes');
+      const aceitar = el('button', 'btn btn-ok', 'Aceitar');
+      const recusar = el('button', 'btn btn-perigo', 'Recusar');
+      const responder = async (decisao) => {
+        aceitar.disabled = true; recusar.disabled = true;
+        const r = await postar('/api/openbot/responder', { agenteId: p.agenteId, pedidoId: p.id, decisao });
+        await carregar();
+        if (secao === 'openbot') desenharOpenBot((r && r.texto) ? r.texto : 'Feito.');
+      };
+      aceitar.onclick = () => responder('accept');
+      recusar.onclick = () => responder('decline');
+      acoes.append(aceitar, recusar); item.append(acoes);
+    } else {
+      item.append(el('p', 'vazio', 'Responda no OpenBot'));
+    }
+    bp.append(item);
+  }
+  miolo.append(bp);
+
+  const bt = el('div', 'bloco');
+  bt.append(el('h2', null, 'Tarefas que o NIGHT mandou'));
+  if (!tarefas.length) bt.append(el('p', 'vazio', 'Nenhuma tarefa mandada ainda.'));
+  for (const t of tarefas) {
+    const item = el('div', 'openbot-item');
+    const topo = el('div', 'openbot-topo');
+    topo.append(el('span', 'openbot-agente', t.agente));
+    topo.append(el('span', 'status ' + (STATUS_CLASSE[t.status] || ''), STATUS_OPENBOT[t.status] || t.status));
+    topo.append(el('span', 'hora', horaCurta(t.em)));
+    item.append(topo, el('p', 'openbot-texto', t.texto));
+    const resposta = t.resposta || t.erro;
+    if (resposta) {
+      const d = el('details');
+      d.append(el('summary', null, 'Resposta'), el('div', 'resposta', resposta));
+      item.append(d);
+    }
+    bt.append(item);
+  }
+  miolo.append(bt);
+
+  const br = el('div', 'bloco');
+  br.append(el('h2', null, 'O que as telas fizeram'));
+  if (!relatos.length) br.append(el('p', 'vazio', 'Nenhum relato das telas ainda.'));
+  for (const r of relatos.slice().sort((a, b) => quando(b.em) - quando(a.em))) {
+    const item = el('div', 'openbot-item');
+    const topo = el('div', 'openbot-topo');
+    topo.append(el('span', 'openbot-agente', r.tela), el('span', 'hora', horaCurta(r.em)));
+    item.append(topo, el('p', 'openbot-texto', r.texto));
+    br.append(item);
+  }
+  miolo.append(br);
+
+  const ba = el('div', 'bloco');
+  ba.append(el('h2', null, 'Agentes com automação ligada'));
+  if (!agentes.length) ba.append(el('p', 'vazio', 'Nenhum agente com automação ligada.'));
+  else {
+    const ul = el('ul');
+    for (const a of agentes) ul.append(el('li', null, a.nome));
+    ba.append(ul);
+  }
+  miolo.append(ba);
+
   vista.append(rol);
 }
 

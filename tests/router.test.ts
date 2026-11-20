@@ -454,3 +454,64 @@ describe('comandos de Radar, vídeo e oferta (F06) e status de trabalho (F07)', 
     assert.notEqual(kind('mostra as minhas ideias'), 'offer-show');
   });
 });
+
+describe('OpenBot: pedidos para os agentes (só por regra)', () => {
+  test('manda a tarefa ao agente, tirando agente e tarefa do texto original', () => {
+    const cases: [string, string, string][] = [
+      ['manda pro Radar do OpenBot pesquisar fone bluetooth', 'Radar', 'pesquisar fone bluetooth'],
+      ['pede pro agente Ada no openbot rodar os testes', 'Ada', 'rodar os testes'],
+      ['Night, fala pro NIGHT Código do OpenBot corrigir o login do Soaken', 'NIGHT Código', 'corrigir o login do Soaken'],
+      ['manda para o agente Campanha no OpenBot: monta o rascunho da oferta 2', 'Campanha', 'monta o rascunho da oferta 2'],
+      ['openbot, Radar: vasculha ofertas de café gelado', 'Radar', 'vasculha ofertas de café gelado'],
+      ['tell the Radar agent in OpenBot to search for coffee', 'Radar', 'search for coffee'],
+    ];
+    for (const [text, agent, task] of cases) {
+      assert.deepEqual(ruleIntent(text, PROJECTS), { kind: 'openbot-task', agent, task }, text);
+    }
+  });
+
+  test('status do OpenBot em PT e EN', () => {
+    const cases = [
+      'o que o openbot fez?',
+      'como estão os agentes do OpenBot?',
+      'status do openbot',
+      'what did openbot do?',
+    ];
+    for (const text of cases) {
+      assert.deepEqual(ruleIntent(text, PROJECTS), { kind: 'openbot-status' }, text);
+    }
+  });
+
+  test('pedido ao OpenBot não vira coding-task nem research', () => {
+    for (const text of [
+      'manda pro Radar do OpenBot pesquisar fone bluetooth',
+      'Night, fala pro NIGHT Código do OpenBot corrigir o login do Soaken',
+      'tell the Radar agent in OpenBot to search for coffee',
+    ]) {
+      assert.equal(kind(text), 'openbot-task', text);
+      assert.notEqual(kind(text), 'coding-task', text);
+      assert.notEqual(kind(text), 'research', text);
+    }
+    // Sem a palavra "openbot", as regras antigas continuam valendo.
+    assert.equal(kind('manda pro Claude corrigir o login do Soaken'), 'coding-task');
+    assert.equal(kind('pesquisa o que é o OpenBot'), 'research');
+    // Pergunta comum sobre o OpenBot não é tarefa nem status.
+    assert.ok(!['openbot-task', 'openbot-status'].includes(kind('o openbot é bom?') ?? ''));
+    // Pedido sem tarefa não vira openbot-task.
+    assert.notEqual(kind('manda pro Radar do openbot'), 'openbot-task');
+  });
+});
+
+describe('OpenBot: pergunta não vira tarefa mandada (revisão de 20/11)', () => {
+  test('sem verbo de envio, ou em forma de pergunta, não manda nada ao agente', () => {
+    for (const text of [
+      'o que o Radar do OpenBot está fazendo?',
+      'o Radar do OpenBot terminou?',
+      'O OpenBot é bom?',
+      'O Radar do OpenBot é rápido',
+      'manda pro Radar do OpenBot o quê?',
+    ]) {
+      assert.notEqual(kind(text), 'openbot-task', text);
+    }
+  });
+});

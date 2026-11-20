@@ -11,6 +11,7 @@ import type { Intent, LocalLlm, Memory, ModelRouter } from '../core/interfaces.t
 import type { ConversationTurn, Job, JobKind, Language, Project, Task } from '../core/types.ts';
 import { FINAL_JOB_STATUSES, FINAL_TASK_STATUSES } from '../core/types.ts';
 import type { ResearchAgent } from '../agents/research.ts';
+import type { OpenBotLike } from '../openbot/tipos.ts';
 import { NIGHT_ROOT, QuotaError, redactKeyLike } from '../agents/research.ts';
 import { buildSharedContext } from '../agents/shared-context.ts';
 import type { ChatAgent } from '../agents/chat.ts';
@@ -166,6 +167,8 @@ const splitSentences = (t: string) => t.split(/(?<=[.!?])\s+/).map((s) => s.trim
 
 /** Dependências opcionais do coordenador: tudo com um padrão seguro quando não vier. */
 export interface CoordinatorOptions {
+  /** Agentes do OpenBot pela API local de automação ("manda pro Radar do OpenBot …"). */
+  openbot?: OpenBotLike;
   /** Em ordem de preferência; o próximo só entra se o anterior falhar ou estiver no limite. */
   researchers?: ResearchAgent[];
   /** Executor das tarefas de código; sem ele, pedido de código só fica registrado. */
@@ -209,8 +212,10 @@ export interface CoordinatorOptions {
  * De onde veio o pedido. 'dono' = voz, terminal ou painel do NIGHT (o Joel em pessoa).
  * 'tela' = uma tela do OpenBot: quem escreve lá é um modelo repassando o pedido, e um modelo
  * pode inventar um "aprovo". Por isso decisão nunca vale vinda de tela; vai para o painel.
+ * 'voz' = voz ao vivo da OpenAI (D-018): é o Joel falando, mas o texto passou por modelos da OpenAI. Decisão
+ * também não vale; mandar tarefa a agente do OpenBot vale (de tela não: um agente mandando em outro vira laço).
  */
-export type Origem = 'dono' | 'tela';
+export type Origem = 'dono' | 'tela' | 'voz';
 
 export interface HandleOptions {
   origem?: Origem;
@@ -287,7 +292,10 @@ export class NightCoordinator {
     this.campaign = opts.campaign;
     this.campaignReader = opts.campaignReader;
     this.restoreRecent = opts.restoreRecent ?? true;
+    this.openbot = opts.openbot;
   }
+
+  private readonly openbot?: OpenBotLike;
 
   /** Quando a última pesquisa terminou (para reconhecer continuação). */
   private lastResearchAt = 0;
@@ -333,13 +341,23 @@ export class NightCoordinator {
       decision = { intent: { kind: 'research', query: text.trim() }, model: 'rules', reason: 'continuação da pesquisa anterior', usedPremiumQuota: false };
     }
     const { intent } = decision;
-    if (origem === 'tela' && DECISOES.has(intent.kind)) {
+    if (origem !== 'dono' && DECISOES.has(intent.kind)) {
       const painel = opts.painelUrl ? ` ${opts.painelUrl}` : '';
-      const out = say(language,
-        `Essa decisão é do Joel e não vale pela tela. Decida no painel do NIGHT${painel} ou fale/digite direto no NIGHT.`,
-        `That decision is the owner's and does not count from a screen. Decide in the NIGHT panel${painel} or say/type it in NIGHT directly.`);
-      await this.memory.logRoute({ text, language, decision: { ...decision, reason: `bloqueado: decisão vinda de tela (${decision.reason})` }, reply: out });
+      const out = origem === 'voz'
+        ? say(language,
+          `Decisão não vale pela voz ao vivo. Decida no painel do NIGHT${painel} ou fale/digite direto no NIGHT.`,
+          `Decisions do not count through live voice. Decide in the NIGHT panel${painel} or say/type it in NIGHT directly.`)
+        : say(language,
+          `Essa decisão é do Joel e não vale pela tela. Decida no painel do NIGHT${painel} ou fale/digite direto no NIGHT.`,
+          `That decision is the owner's and does not count from a screen. Decide in the NIGHT panel${painel} or say/type it in NIGHT directly.`);
+      await this.memory.logRoute({ text, language, decision: { ...decision, reason: `bloqueado: decisão vinda de ${origem === 'voz' ? 'voz ao vivo' : 'tela'} (${decision.reason})` }, reply: out });
       return this.finish(text, language, out, intent.kind, 'rules');
+    }
+    if (intent.kind === 'openbot-task') {
+      const r = await this.openbotTask(intent, language, origem);
+      await this.memory.logRoute({ text, language, decision, reply: r.text });
+      const followUp = r.depois?.then((t): Reply => ({ text: t, language, intent: 'openbot-task', model: 'openbot' }));
+      return { ...this.finish(text, language, r.text, 'openbot-task', 'rules'), followUp };
     }
     if (intent.kind === 'research') {
       // O route_log desta vai depois, com o modelo que de fato respondeu e o uso de cota.
@@ -390,7 +408,7 @@ export class NightCoordinator {
       case 'show-diff': ({ text: out, detail } = await this.showDiff(intent, language)); break;
       case 'run-project': {
         out = await this.prepareRun(intent.target, language);
-        if (origem === 'tela' && this.pendingRun) {
+        if (origem !== 'dono' && this.pendingRun) {
           const painel = opts.painelUrl ? ` ${opts.painelUrl}` : '';
           out += say(language, ` Para rodar, confirme no painel do NIGHT${painel} em até 5 minutos.`,
             ` To run it, confirm in the NIGHT panel${painel} within 5 minutes.`);
@@ -398,6 +416,7 @@ export class NightCoordinator {
         break;
       }
       case 'find-folder': out = await this.findFolder(intent.target, language); break;
+      case 'openbot-status': out = await this.openbotStatus(language); break;
       case 'stop-speaking': out = ''; break;
     }
     // Grava depois de agir, com a resposta: é isso que os outros agentes vão ver no contexto.
@@ -1577,6 +1596,22 @@ export class NightCoordinator {
     } catch (err) {
       return say(language, `Não consegui: ${(err as Error).message}.`, `I couldn't: ${(err as Error).message}.`);
     }
+  }
+
+  /** "Manda pro Radar do OpenBot pesquisar X": pela API local de automação do OpenBot (src/openbot). */
+  private async openbotTask(intent: Extract<Intent, { kind: 'openbot-task' }>, language: Language, origem: Origem): Promise<{ text: string; depois?: Promise<string> }> {
+    if (origem === 'tela') {
+      return { text: say(language, 'Uma tela do OpenBot não manda tarefa para outro agente do OpenBot. Peça direto no NIGHT (voz, terminal ou painel).',
+        'An OpenBot screen cannot send work to another OpenBot agent. Ask NIGHT directly (voice, terminal or panel).') };
+    }
+    if (!this.openbot) return { text: say(language, 'A ligação com o OpenBot não está ligada neste NIGHT.', 'The OpenBot link is not on in this NIGHT.') };
+    const r = await this.openbot.enviar(intent.agent, intent.task);
+    return { text: r.texto, depois: r.depois };
+  }
+
+  private async openbotStatus(language: Language): Promise<string> {
+    if (!this.openbot) return say(language, 'A ligação com o OpenBot não está ligada neste NIGHT.', 'The OpenBot link is not on in this NIGHT.');
+    return this.openbot.resumo();
   }
 }
 

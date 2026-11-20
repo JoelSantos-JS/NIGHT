@@ -207,3 +207,20 @@ e o que vai para a ponte é cortado em 3,5 KB; mesmo pedido em 10 s ou mais de 8
 painel perguntar pelos eventos por 30 s, a voz desliga; fechar o NIGHT espera o Codex fechar. Limite que fica: o
 filtro de voz do dono (D-016) não vale aqui, porque o áudio não passa pelo NIGHT. Contra TV ou outra pessoa falando,
 valem o botão Mudo, o limite de pedidos e as decisões só no painel.
+
+## D-019 — NIGHT e OpenBot ligados pela API local de automação do OpenBot (20/11/2026)
+Pedido do Joel: cadastrar o NIGHT no OpenBot, ver no NIGHT o que o OpenBot faz e o NIGHT mandar tarefa aos agentes.
+- **NIGHT → OpenBot:** "manda pro Radar do OpenBot pesquisar X" (só por regra, com a palavra "openbot") vai para
+  `src/openbot/`: lê `url` e `token` em `%APPDATA%\OpenBot\automation` a cada pedido (o OpenBot troca quando
+  reinicia), só aceita endereço 127.0.0.1/localhost e nunca mostra o token. Acompanha a entrega até a resposta, que
+  aparece na conversa do NIGHT no painel e nas novidades da tela NIGHT. Só funciona com "Local scripts" ligado no agente
+  (desligado por padrão). Limite do OpenBot: 30 mensagens por hora.
+- **OpenBot → NIGHT:** a API do OpenBot não mostra o histórico das conversas. O NIGHT vê o que ele mandou, o que os
+  agentes esperam do Joel (aprovações e perguntas, a cada 15 s) e o diário das telas: ferramenta MCP `night_relatar`,
+  que as instruções do servidor e de cada tela mandam chamar depois de cada resposta. Tudo na seção OpenBot do painel.
+- **Quem pode:** origem nova `'voz'` (voz ao vivo): decisão não vale, mandar tarefa ao OpenBot vale. De `'tela'` não
+  vale (um agente do OpenBot mandando em outro vira laço). Aprovação pendente de agente do OpenBot só se aceita ou
+  recusa no painel (`/api/openbot/responder`, token e Origin); pergunta, só no OpenBot.
+- **Achado 20/11:** os 6 agentes do NIGHT no OpenBot estavam com acesso "full" e controle do computador ligado, embora
+  as instruções digam que a tela não age no PC. Com o NIGHT mandando tarefas, isso tem que ser fechado no OpenBot
+  (acesso com aprovação e sem controle do computador).

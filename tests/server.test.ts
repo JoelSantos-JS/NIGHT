@@ -5,6 +5,7 @@ import type { Decisao, HandleOptions, Reply } from '../src/app/coordinator.ts';
 import { lerDecisao, startNightServer, type CoordinatorLike, type NightServer, type ServerDeps } from '../src/app/server.ts';
 import type { Job } from '../src/core/types.ts';
 import type { RadarOffer } from '../src/radar/store.ts';
+import type { EstadoOpenBot } from '../src/openbot/tipos.ts';
 
 /** Coordenador falso: guarda o que recebeu e responde na hora (ou trava, para testar a espera). */
 class FakeCoord implements CoordinatorLike {
@@ -90,7 +91,7 @@ describe('servidor das telas e painel', () => {
     const note = await mcp({ jsonrpc: '2.0', method: 'notifications/initialized' });
     assert.equal(note.status, 202);
     const list = await mcp({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-    assert.deepEqual(list.json.result.tools.map((t: { name: string }) => t.name), ['night_pedir', 'night_novidades', 'night_trabalhos']);
+    assert.deepEqual(list.json.result.tools.map((t: { name: string }) => t.name), ['night_pedir', 'night_novidades', 'night_trabalhos', 'night_relatar']);
     const nope = await mcp({ jsonrpc: '2.0', id: 3, method: 'resources/list' });
     assert.equal(nope.json.error.code, -32601);
   });
@@ -324,13 +325,13 @@ describe('voz ao vivo pelas rotas do painel', () => {
     assert.ok(Array.isArray(corpo.eventos));
   });
 
-  test('pedido falado entra como tela: decisão nunca executa pela voz ao vivo', async () => {
+  test('pedido falado entra com origem voz: decisão nunca executa pela voz ao vivo', async () => {
     falso.emitir('pedido', { id: 9, method: 'item/tool/call',
       params: { threadId: 't1', namespace: 'night', tool: 'pedir_ao_night', arguments: { pedido: 'aprovo a oferta 1' } } });
     for (let i = 0; i < 50 && !falso.respostas.some((r) => r.id === 9); i++) await new Promise((ok) => setTimeout(ok, 10));
     const pedido = coords.flatMap((c) => c.handled).find((h) => h.text === 'aprovo a oferta 1');
     assert.ok(pedido, 'o pedido falado não chegou ao coordenador');
-    assert.equal(pedido.opts?.origem, 'tela');
+    assert.equal(pedido.opts?.origem, 'voz');
     assert.match(pedido.opts?.painelUrl ?? '', /\/painel$/);
     assert.equal(falso.respostas.find((r) => r.id === 9)?.result.success, true);
   });
@@ -348,5 +349,96 @@ describe('voz ao vivo pelas rotas do painel', () => {
     const corpo = JSON.parse(ev.body) as { ativa: boolean; eventos: { tipo: string }[] };
     assert.equal(corpo.ativa, false);
     assert.ok(corpo.eventos.some((e) => e.tipo === 'fim'));
+  });
+});
+
+describe('servidor: ligação com o OpenBot', () => {
+  /** Espelho falso: guarda o diário e as aprovações, e deixa o teste disparar uma novidade. */
+  class OpenBotFalso {
+    relatos: { tela: string; texto: string }[] = [];
+    aprovacoes: { agenteId: string; pedidoId: string; decisao: 'accept' | 'decline' }[] = [];
+    ouvintes: ((texto: string) => void)[] = [];
+    estadoAtual: EstadoOpenBot = {
+      ligado: true, motivo: null, agentes: [{ id: 'a1', nome: 'NIGHT Radar' }], tarefas: [], pendentes: [], relatos: [],
+    };
+
+    estado(): EstadoOpenBot { return this.estadoAtual; }
+    relatar(tela: string, texto: string): void { this.relatos.push({ tela, texto }); }
+    async responderAprovacao(agenteId: string, pedidoId: string, decisao: 'accept' | 'decline'): Promise<string> {
+      this.aprovacoes.push({ agenteId, pedidoId, decisao });
+      return 'Aceito no NIGHT Radar do OpenBot.';
+    }
+    ouvir(fn: (texto: string) => void): void { this.ouvintes.push(fn); }
+    avisar(texto: string): void { for (const fn of this.ouvintes) fn(texto); }
+  }
+
+  let servidor: NightServer;
+  let falso: OpenBotFalso;
+  let token: string;
+  let origin: string;
+
+  const mcp = async (msg: object) => {
+    const r = await http(servidor.port, 'POST', '/mcp', JSON.stringify(msg), { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' });
+    return { status: r.status, json: r.body ? JSON.parse(r.body) : null };
+  };
+  const call = async (name: string, args: object) =>
+    (await mcp({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name, arguments: args } })).json.result;
+  const postJson = (caminho: string, dados: object, headers: Record<string, string> = {}) =>
+    http(servidor.port, 'POST', caminho, JSON.stringify(dados), { 'Content-Type': 'application/json', ...headers });
+
+  before(async () => {
+    falso = new OpenBotFalso();
+    const deps: ServerDeps = {
+      makeCoordinator: () => new FakeCoord(),
+      memory: {
+        listJobs: async () => [],
+        listTasks: async () => [],
+        listPendingApprovals: async () => [],
+        getProject: async () => null,
+      },
+      openbot: falso,
+    };
+    servidor = await startNightServer(deps, { port: 0 });
+    token = /const TOKEN = "([0-9a-f]+)"/.exec((await http(servidor.port, 'GET', '/painel')).body)![1]!;
+    origin = `http://127.0.0.1:${servidor.port}`;
+  });
+  after(async () => { await servidor.close(); });
+
+  test('g) tools/list inclui night_relatar e a chamada registra no diário', async () => {
+    const lista = await mcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    assert.ok(lista.json.result.tools.some((t: { name: string }) => t.name === 'night_relatar'));
+
+    const ok = await call('night_relatar', { tela: 'radar', texto: 'fez X' });
+    assert.equal(ok.isError, false);
+    assert.deepEqual(falso.relatos, [{ tela: 'radar', texto: 'fez X' }]);
+
+    assert.equal((await call('night_relatar', { tela: 'radar', texto: '  ' })).isError, true);
+    assert.equal((await call('night_relatar', { tela: 'radar', texto: 'x'.repeat(1001) })).isError, true);
+    assert.equal(falso.relatos.length, 1, 'nada inválido chegou ao diário');
+  });
+
+  test('h) /api/estado traz o openbot igual ao do espelho', async () => {
+    const e = JSON.parse((await http(servidor.port, 'GET', '/api/estado')).body);
+    assert.deepEqual(e.openbot, falso.estado());
+  });
+
+  test('i) /api/openbot/responder exige token e decisão válida', async () => {
+    const semToken = await postJson('/api/openbot/responder',
+      { agenteId: 'a1', pedidoId: 'p1', decisao: 'accept' }, { Origin: origin });
+    assert.equal(semToken.status, 403);
+    const invalida = await postJson('/api/openbot/responder',
+      { agenteId: 'a1', pedidoId: 'p1', decisao: 'talvez', token }, { Origin: origin });
+    assert.equal(invalida.status, 400);
+    const ok = await postJson('/api/openbot/responder',
+      { agenteId: 'a1', pedidoId: 'p1', decisao: 'accept', token }, { Origin: origin });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(JSON.parse(ok.body), { texto: 'Aceito no NIGHT Radar do OpenBot.' });
+    assert.deepEqual(falso.aprovacoes, [{ agenteId: 'a1', pedidoId: 'p1', decisao: 'accept' }]);
+  });
+
+  test('j) novidade do OpenBot chega em night_novidades da tela NIGHT', async () => {
+    falso.avisar('O Radar respondeu: X');
+    const n = await call('night_novidades', { tela: 'night' });
+    assert.match(n.content[0].text, /O Radar respondeu: X/);
   });
 });

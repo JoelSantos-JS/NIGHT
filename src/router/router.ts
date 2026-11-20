@@ -444,6 +444,89 @@ function videoCreateIntent(text: string, n: string): Intent | null {
   return { kind: 'video-create', topic };
 }
 
+// ---------- OpenBot (telas e agentes): só por regra e sempre com a palavra "openbot" ----------
+// "manda pro Radar do OpenBot pesquisar X" não é tarefa de código nem pesquisa na internet: o pedido é
+// para um agente do OpenBot. O agente e a tarefa saem do texto ORIGINAL (com acentos e maiúsculas).
+
+const OPENBOT = /\bopen ?bot\b/;
+
+// Status do OpenBot tem que ser explícito: "o openbot é bom?" é conversa, não status.
+const OPENBOT_STATUS = new RegExp([
+  // "status do openbot", "andamento do openbot", "openbot status"
+  String.raw`\b(status|andamento|progresso)\b.{0,30}\bopen ?bot\b`,
+  String.raw`\bopen ?bot\b.{0,20}\b(status|andamento|progresso)\b`,
+  // "o que o openbot fez?", "o que o openbot está fazendo?"
+  String.raw`\bo que (o |a )?open ?bot\b.{0,30}\b(fez|feito|fazendo|faz|aconteceu)\b`,
+  // "como estão os agentes do OpenBot?", "como está o openbot?"
+  String.raw`\bcomo (esta|estao|ta|anda|vai)\b.{0,50}\bopen ?bot\b`,
+  // EN: "what did openbot do?", "how are the openbot agents?"
+  String.raw`\bwhat (did|has|have)\b.{0,20}\bopen ?bot\b.{0,20}\b(do|done|doing)\b`,
+  String.raw`\bhow (is|are)\b.{0,30}\bopen ?bot\b`,
+].join('|'));
+
+function openbotStatusIntent(n: string): Intent | null {
+  return OPENBOT.test(n) && OPENBOT_STATUS.test(n) ? { kind: 'openbot-status' } : null;
+}
+
+// Conector entre o agente e o OpenBot: "Radar do OpenBot", "Ada no openbot", "Radar agent in OpenBot".
+const LOCATOR_TAIL = /(?:^|\s)(?:do|da|de|no|na|em|para|pra|to|in|on|of|for|the|agente|agent|com)\s*$/i;
+// Nome do agente = sequência de palavras com maiúscula no fim do trecho ("Radar", "NIGHT Código").
+const CAP_SEQ = /([\p{Lu}][\p{L}\p{N}-]*(?:\s+[\p{Lu}][\p{L}\p{N}-]*)*)\s*$/u;
+
+/** Nome do agente que vem antes do "OpenBot": "manda pro Radar do OpenBot …" → "Radar". */
+function agentBeforeOpenbot(before: string): string | null {
+  let pre = before.replace(/[\s,;:.!?–—-]+$/u, '');
+  for (let i = 0; i < 3; i++) pre = pre.replace(LOCATOR_TAIL, '');
+  return CAP_SEQ.exec(pre)?.[1]?.trim() || null;
+}
+
+/** Tarefa que vem depois do "OpenBot", sem os conectores e a pontuação de separação. */
+function openbotTask(after: string): string {
+  return after
+    .replace(/^[\s,;:.!?–—-]+/u, '')
+    .replace(/^(?:to|para|pra|que)\s+/i, '')
+    .replace(/[.!?]+$/u, '')
+    .trim();
+}
+
+/** Separa agente e tarefa de um pedido ao OpenBot; null quando falta um dos dois. */
+function openbotParts(text: string): { agent: string; task: string } | null {
+  const m = /\bopen\s?bot\b/i.exec(text);
+  if (!m) return null;
+  const before = text.slice(0, m.index);
+  const after = text.slice(m.index + m[0].length);
+  // "openbot, Radar: vasculha X": o agente vem DEPOIS da palavra, antes dos dois-pontos.
+  const inline = /^\s*[,;:–—-]?\s*([\p{Lu}][\p{L}\p{N}-]*(?:\s+[\p{Lu}][\p{L}\p{N}-]*)*)\s*[,:–—-]\s*(.+)$/u.exec(after);
+  if (inline) {
+    const task = openbotTask(inline[2]!);
+    return task ? { agent: inline[1]!.trim(), task } : null;
+  }
+  const agent = agentBeforeOpenbot(before);
+  if (!agent) return null;
+  const task = openbotTask(after);
+  // Pedido sem tarefa ("manda pro Radar do openbot") não vira openbot-task.
+  return task ? { agent, task } : null;
+}
+
+/**
+ * Verbo de envio no começo: sem ele, "o que o Radar do OpenBot está fazendo?" viraria tarefa mandada de verdade
+ * (revisão de 20/11). A forma "openbot, Radar: tarefa" também vale: é endereçada.
+ */
+const OPENBOT_SEND = /^(manda|mande|mandar|pede|peca|pedir|fala|fale|falar|diz|diga|dizer|avisa|avise|envia|envie|enviar|passa|passe|pergunta|pergunte|tell|ask|send|have)\b/;
+const OPENBOT_ADDRESSED = /^open ?bot\b\s*[,:;–—-]/;
+/** Artigo ou pronome solto não é nome de agente ("O OpenBot é bom?"). */
+const NOT_AGENT = /^(o|a|e|os|as|um|uma|eu|ele|ela|the|an?)$/i;
+
+/** "manda pro Radar do OpenBot pesquisar X" só vale com a palavra "openbot"/"open bot" e um verbo de envio. */
+function openbotTaskIntent(text: string, n: string): Intent | null {
+  if (!OPENBOT.test(n)) return null;
+  const addressed = OPENBOT_ADDRESSED.test(n);
+  if (!addressed && (!OPENBOT_SEND.test(n) || QUESTION.test(n))) return null;
+  const parts = openbotParts(text);
+  if (!parts || parts.agent.length < 2 || NOT_AGENT.test(parts.agent)) return null;
+  return { kind: 'openbot-task', agent: parts.agent, task: parts.task };
+}
+
 /** Só as regras, sem modelo. null = nenhuma regra reconheceu. */
 export function ruleIntent(rawText: string, projectNames: string[]): Intent | null {
   const text = stripWakeWord(rawText);
@@ -452,6 +535,14 @@ export function ruleIntent(rawText: string, projectNames: string[]): Intent | nu
   const project = projectIn(n, projectNames);
 
   if (STOP_SPEAKING.test(n)) return { kind: 'stop-speaking' };
+  // OpenBot antes de oferta, código e pesquisa: "manda pro Radar do OpenBot pesquisar X" não pode
+  // virar coding-task nem research, e "status do openbot" não pode virar o status genérico.
+  const openbotStatus = openbotStatusIntent(n);
+  if (openbotStatus) return openbotStatus;
+  if (!NEGATED.test(n)) {
+    const openbot = openbotTaskIntent(text, n);
+    if (openbot) return openbot;
+  }
   const negated = NEGATED.test(n) || QUESTION.test(n);
   // M07: "como está a campanha da oferta 2?" vem antes de tudo que fala de oferta e do status genérico.
   const campaignStatus = campaignStatusIntent(n);
