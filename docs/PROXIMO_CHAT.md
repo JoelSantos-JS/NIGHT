@@ -11,6 +11,23 @@ As passagens anteriores continuam no histórico:
 
 ---
 
+## 0. Atualização do fim de 20/11 (ler antes do resto)
+
+- **Feito (decisão D-021):**
+  - Radar com nota real (busca por nicho, números conferidos na resposta da Meta, corte 6 com parcial).
+  - Agentes **NIGHT Design** e **NIGHT Marketing**, com skills revisadas em `openbot/skills/`.
+  - Modelo local com contexto de 8192: o Qwen ocupava 6,4 GB de RAM.
+  - 783 testes; o do agendador falha às vezes com o PC carregado.
+- **Falta, com o Joel:**
+  1. Rodar "pesquisa produtos de lowticket" e ver a primeira oferta com nota real.
+  2. Importar os 2 agentes novos no OpenBot. O arquivo é `D:\NIGHT-data\openbot\night-telas-design-marketing.zip`; gere de novo com `pnpm night:telas design marketing`. Caminho: Configurações do servidor → Importar. Depois, ligar o MCP `night` neles.
+  3. Decidir se a `viral-video-studio` entra no agente de vídeo (o vídeo está parado).
+  4. Radar fase 2: navegador num perfil separado do Chrome, para trazer dias no ar e preço.
+- **Git:** 8 commits locais sem push (de `6b7fd83` até esta passagem). Confirme com o Joel antes do push.
+- **Worktree antiga do Codex:** `C:\Users\Joel\.codex\worktrees\e6bd\NIGHT` tem `src/workspaces/` sem commit. Pergunte antes de apagar.
+
+---
+
 ## 1. Estado em uma olhada
 
 - **Git:** o último commit no GitHub é `deffb33`.
