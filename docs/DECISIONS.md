@@ -240,3 +240,24 @@ Pedido do Joel: cadastrar o NIGHT no OpenBot, ver no NIGHT o que o OpenBot faz e
   usa essa busca por padrão; `NIGHT_META_READ_TOOLS=off` desliga.
 - Contas: uma das contas de anúncios do Joel está desativada pela Meta ("atividade incomum"); duas estão ativas. A
   campanha só roda depois de o Joel escolher qual vai em `NIGHT_META_AD_ACCOUNT`.
+
+## D-021 — Radar com nota real; agentes Design e Marketing com skills revisadas (20/11/2026)
+- **Busca por nicho:** uma sessão do Claude por nicho busca o termo (50 anúncios), pega as 3 páginas que mais aparecem
+  e, para cada uma, os anúncios ativos estimados. O **código** conta os anunciantes. Todo número que vira nota é
+  conferido no `tool_result` da Meta (saída `stream-json`); o que não aparece lá é descartado com aviso. Sessão sem
+  resposta crua da Meta não pontua nada.
+- **Corte:** 6, como no PDF. A Meta não mostra dias no ar nem preço; com só esses dois faltando, a oferta passa como
+  "parcial" se nota/máximo >= 0,6 (com máximo 6, precisa de 4). Faltando outro critério, não passa. Até 15 ofertas.
+  O navegador (perfil separado do Chrome) para ler dias no ar e preço fica para a fase 2.
+- **"Dá PDF"** pelo DeepSeek, só com o nicho: título de anúncio é texto de terceiro e não entra no prompt.
+- Link da Biblioteca (facebook.com) não conta como domínio; a mesma página em dois nichos é um candidato só; a nota é
+  zerada quando o candidato é visto de novo (recalcular é código puro).
+- **Agentes novos no OpenBot:** `NIGHT Design` (página de vendas e telas do low-ticket) e `NIGHT Marketing` (copy,
+  ângulos e prompts de criativos). Diferente das 6 telas, **trabalham** e escrevem só em `D:\NIGHT-data\design\` e
+  `D:\NIGHT-data\marketing\`; nunca publicam, gastam, aprovam ou chamam serviço pago.
+- **Skills:** copiadas para `openbot/skills/` depois de revisadas (licenças MIT/Apache, origem em `TERCEIROS.md`) e
+  levadas no pacote de importação (`pnpm night:telas design marketing`). A `viral-video-studio` só vai para o agente
+  de vídeo quando o Joel liberar o vídeo. Navegador (`agent-browser`, `playwright-mcp`) ficou de fora por ora.
+- **Por que o pedido não foi ao OpenBot:** por desenho (D-019), o NIGHT só manda tarefa ao OpenBot quando a frase cita
+  o OpenBot ("manda pro Radar do OpenBot …"). "Pesquisa produtos de lowticket" roda o Radar do próprio NIGHT. A ponte
+  NIGHT → OpenBot foi testada em 20/11 e está de pé (os 6 agentes respondem pela API).
