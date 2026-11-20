@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { buildImportManifest, zipStored } from '../scripts/openbot-telas.ts';
+import { SKILLS_DA_TELA, arquivosDasSkills, buildImportManifest, zipStored } from '../scripts/openbot-telas.ts';
 import { TELAS } from '../src/app/server.ts';
 
 const ler = (t: string) => readFileSync(join(import.meta.dirname, '..', 'openbot', 'telas', `${t}.md`), 'utf8');
@@ -45,4 +45,27 @@ test('zip sem compressão tem o arquivo na raiz, com CRC certo', () => {
   const fim = zip.subarray(zip.length - 22);
   assert.equal(fim.readUInt32LE(0), 0x06054b50);
   assert.equal(fim.readUInt16LE(10), 1);
+});
+
+test('skills ligadas: cada pasta tem SKILL.md com o mesmo nome e licença, e o caminho bate com o manifesto', () => {
+  const pasta = join(import.meta.dirname, '..', 'openbot', 'skills');
+  const arquivos = arquivosDasSkills(pasta);
+  const m = buildImportManifest(ler) as { agents: { key: string; skills: string[] }[] };
+  for (const [tela, skills] of Object.entries(SKILLS_DA_TELA)) {
+    const agente = m.agents.find((a) => a.key === tela)!;
+    assert.deepEqual(agente.skills, skills.map((s) => `agents/${tela}/skills/${s}`));
+    for (const s of skills) {
+      const skillMd = arquivos.find((a) => a.name === `agents/${tela}/skills/${s}/SKILL.md`);
+      assert.ok(skillMd, `${s} sem SKILL.md`);
+      // O OpenBot exige name igual ao nome da pasta.
+      const linhas = skillMd.data.toString('utf8').split(/\r?\n/);
+      const fim = linhas.indexOf('---', 1);
+      assert.equal(linhas[0], '---');
+      assert.ok(fim > 0 && linhas.slice(1, fim).includes(`name: ${s}`), `${s}: name diferente da pasta`);
+      assert.ok(arquivos.some((a) => a.name.startsWith(`agents/${tela}/skills/${s}/LICENSE`)), `${s} sem licença`);
+    }
+  }
+  // Nenhum caminho com barra invertida, "..", ou cache do Python; e o vídeo (parado) não leva skill.
+  for (const a of arquivos) assert.doesNotMatch(a.name, /\|\.\.|__pycache__/);
+  assert.deepEqual(m.agents.find((a) => a.key === 'video')!.skills, []);
 });
