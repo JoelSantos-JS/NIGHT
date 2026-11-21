@@ -208,6 +208,7 @@ let estado = null;
 let secao = 'agentes';
 let tela = 'night';
 let enviando = false;
+let irParaFim = false;
 
 const $ = (s) => document.querySelector(s);
 function el(tag, cls, texto) { const e = document.createElement(tag); if (cls) e.className = cls; if (texto != null) e.textContent = texto; return e; }
@@ -447,11 +448,26 @@ function desenhar() {
   const nOb = Array.isArray(ob.pendentes) ? ob.pendentes.length : 0;
   const co = $('#contador-openbot'); co.hidden = nOb === 0; co.textContent = String(nOb);
   document.querySelectorAll('.trilho-btn').forEach((b) => b.classList.toggle('ativo', b.dataset.secao === secao));
+  // A atualização de 5 em 5 s redesenha tudo: sem isso o chat pulava para o fim (e as outras seções para o topo)
+  // enquanto o Joel lia (21/11). Mesma tela: volta para onde estava; só desce se já estava no fim ou mandou mensagem.
+  const vista = $('#vista');
+  const antes = vista.querySelector('.rolagem');
+  const lugar = secao + ':' + tela;
+  const mesmaVista = vista.dataset.lugar === lugar;
+  const noFim = !antes || antes.scrollHeight - antes.scrollTop - antes.clientHeight < 80;
+  const topo = antes ? antes.scrollTop : 0;
   desenharLista();
   if (secao === 'agentes') desenharAgente();
   else if (secao === 'decisoes') desenharDecisoes();
   else if (secao === 'openbot') desenharOpenBot();
   else desenharConexoes();
+  vista.dataset.lugar = lugar;
+  const depois = vista.querySelector('.rolagem');
+  if (depois) {
+    const descer = secao === 'agentes' && (!mesmaVista || noFim || irParaFim);
+    depois.scrollTop = descer ? depois.scrollHeight : (mesmaVista ? topo : 0);
+  }
+  irParaFim = false;
 }
 
 function desenharLista() {
@@ -505,15 +521,16 @@ function desenharAgente() {
     const texto = ta.value.trim(); if (!texto || enviando) return;
     enviando = true; ta.value = '';
     (estado.conversas[tela] ||= []).push({ quem: 'voce', texto });
+    irParaFim = true;
     desenhar();
     await postar('/api/pedir', { tela, texto });
     enviando = false;
+    irParaFim = true;
     await carregar();
     $('#texto')?.focus();
   };
   comp.append(f);
   vista.append(rol, comp);
-  rol.scrollTop = rol.scrollHeight;
 }
 
 function desenharDecisoes(retorno) {

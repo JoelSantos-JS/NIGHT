@@ -23,3 +23,14 @@ test('continuação de pesquisa só com referência ao que veio antes', async ()
   assert.ok(FOLLOW_UP.test(normalize('compara com a UTMify')));
   assert.ok(!FOLLOW_UP.test(normalize('meus dados estão salvos?')));
 });
+
+test('atualização de 5 s não mexe na rolagem de quem está lendo (Joel, 21/11)', () => {
+  const html = paginaPainel('t');
+  const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1] ?? '';
+  assert.doesNotThrow(() => new Function(script), 'o script do painel continua válido');
+  // O chat não força mais o fim a cada redesenho; desce só se já estava no fim, trocou de tela ou mandou mensagem.
+  assert.ok(!/rol\.scrollTop = rol\.scrollHeight/.test(script));
+  assert.match(script, /const noFim = /);
+  assert.match(script, /mesmaVista \? topo : 0/);
+  assert.match(script, /irParaFim = true;\s*desenhar\(\)/);
+});
