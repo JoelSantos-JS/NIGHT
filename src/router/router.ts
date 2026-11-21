@@ -454,6 +454,8 @@ const RADAR_ORDER_VERB = /\b(pesquisa|pesquise|pesquisar|vasculha|vasculhe|vascu
 const ASKING_FOR = /\b(voce|pode|poderia|consegue|quero|pra mim|para mim|can you|could you|for me|please)\b/;
 /** "o que é o radar de ofertas?" é pergunta sobre o Radar, não pedido de busca. */
 const ABOUT_RADAR = /\bo que (e|eh|sao)\b|\bcomo funciona\b/;
+/** "pesquise quanto custa um curso low ticket": o verbo pede uma resposta, não ofertas (teste real 21/11). */
+const ASKS_ANSWER = /\b(?:pesquisa|pesquise|pesquisar|procura|procure|procurar|busca|busque|buscar|vasculha|vasculhe|vasculhar)\s+(?:(?:pra|para) mim\s+)?(?:quanto|quantos|quantas|qual|quais|como|por que|porque|o que|onde|quando|se)\b/;
 const NICHE_FILLER = /^(?:(?:no|na|o|a|pelo|pela)\s+)?(?:radar|ofertas?|offers?|produtos?|algo|alguma coisa|coisas?|tudo|pra mim|para mim)?$/i;
 
 function radarSearchIntent(text: string, n: string): Intent | null {
@@ -466,6 +468,7 @@ function radarSearchIntent(text: string, n: string): Intent | null {
     || (radarWord && pedido && (USE_RADAR.test(n) || RADAR_ORDER_VERB.test(n)));
   const verb = SEARCH_VERB.test(n) || RADAR_RESEARCH_VERB.test(n);
   const lowTicket = LOW_TICKET_WORD.test(n) && (verb || (pedido && RADAR_ORDER_VERB.test(n)));
+  if (!byName && ASKS_ANSWER.test(n)) return null;
   if (!byName && !lowTicket && (!hasTarget || !verb)) return null;
   const limpo = text.replace(/\bradar de ofertas\b/gi, 'radar').replace(/\s+(?:pra|para) mim\b/gi, '').replace(/[?]+$/, '')
     // "use o radar e pesquise X": o "use o radar" não é nicho.

@@ -61,6 +61,36 @@ export const PALAVRAS_LOW_TICKET = [
   'acesso vitalício', 'curso completo passo a passo', 'método comprovado', 'garantia de 7 dias',
 ];
 const LOW_TICKET = /\b(low[ -]?ticket|infoprodutos?|produtos? digita(l|is))\b/i;
+/**
+ * "valores mais baixos" (Joel, 21/11): o que já vende barato, de R$ 9,90 a R$ 37. Pela rubrica do PDF, origem abaixo
+ * de R$ 37 vale 0 no preço: são os concorrentes do preço final, não a oferta cara para baratear.
+ */
+export const PALAVRAS_PRECO_BAIXO = [
+  'apenas R$ 9,90', 'por apenas R$ 19,90', 'apenas R$ 19,90', 'por R$ 27', 'apenas R$ 27', 'apenas R$ 37',
+];
+const PRECO_BAIXO = /\b(barat[oa]s?|mais baix[oa]s?|valor(es)? (mais )?baix[oa]s?|pre[cç]os? (mais )?baix[oa]s?|menor(es)? (valor|pre[cç])|r\$ ?(9|19|27)\b)/i;
+
+/**
+ * Frases de preço desta rodada. Cada frase é uma sessão do Claude (~3 min, teste real 21/11), então vão poucas por
+ * vez (NIGHT_RADAR_BUSCAS, padrão 3), girando um passo por dia para cobrir a lista inteira em poucos dias.
+ * Antes o Codex trocava as frases por nichos ("planner de rotina") e a busca por nicho trazia qualquer página que
+ * anuncia, sem preço: oferta "nada a ver com low-ticket" (Joel, 21/11).
+ */
+export function palavrasDaRodada(
+  agora = new Date(), quantas = Number(process.env.NIGHT_RADAR_BUSCAS ?? 3), lista: readonly string[] = PALAVRAS_LOW_TICKET,
+): string[] {
+  const n = Number.isInteger(quantas) && quantas > 0 ? Math.min(quantas, lista.length) : Math.min(3, lista.length);
+  const dia = Math.floor(agora.getTime() / 86_400_000);
+  const inicio = (dia * n) % lista.length;
+  return Array.from({ length: n }, (_, i) => lista[(inicio + i) % lista.length]!);
+}
+
+/** Frases do Radar: preço baixo se o pedido falar em barato/valor baixo; senão as caras do PDF. */
+export function palavrasDoPedido(texto: string, agora = new Date()): string[] {
+  return PRECO_BAIXO.test(texto)
+    ? palavrasDaRodada(agora, undefined, PALAVRAS_PRECO_BAIXO)
+    : palavrasDaRodada(agora);
+}
 
 const SYSTEM_PROMPT: Record<Language, string> = {
   'pt-BR': `Você é o Night, assistente pessoal do Joel, rodando no computador dele.
@@ -423,8 +453,8 @@ export class NightCoordinator {
       case 'coding-task': out = await this.codingTask(intent, language); break;
       case 'cancel': out = await this.cancel(intent, language); break;
       case 'approval': out = await this.approval(intent, language); break;
-      case 'radar-search': out = await this.createWork('radar', text, LOW_TICKET.test(intent.query)
-        ? { query: intent.query, keywords: PALAVRAS_LOW_TICKET, planejarNichos: true } : { query: intent.query }, language); break;
+      case 'radar-search': out = await this.createWork('radar', text, LOW_TICKET.test(intent.query) || PRECO_BAIXO.test(text)
+        ? { query: intent.query, keywords: palavrasDoPedido(text) } : { query: intent.query }, language); break;
       case 'video-create': out = await this.createWork('video', text, { topic: intent.topic }, language); break;
       case 'job-status': ({ text: out, detail } = await this.jobStatus(intent, language)); break;
       case 'job-cancel': out = await this.cancelJob(intent, language); break;

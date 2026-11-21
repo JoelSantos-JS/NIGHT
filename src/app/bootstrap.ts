@@ -34,6 +34,7 @@ import { ClaudeMcpMetaReader } from '../ads/meta-reader.ts';
 import { PgOfferLinks } from '../lowticket/links.ts';
 import { LowticketWorker } from '../lowticket/worker.ts';
 import { MetaMcpAdSource } from '../radar/meta-mcp-source.ts';
+import { CodexMcpAdSource } from '../radar/codex-mcp-source.ts';
 import { OpenBotEspelho } from '../openbot/espelho.ts';
 
 /** Pasta de dados do NIGHT; cada parte fica fora do repositório. */
@@ -198,7 +199,9 @@ export async function createNight(opts: CreateNightOptions = {}) {
       artifacts,
       planejador: new PlanejadorComPesquisa(researchers),
       source: metaReadTools.length
-        ? new MetaMcpAdSource({ readTools: metaReadTools, workDir: join(paths.data, 'meta-mcp') })
+        ? process.env.NIGHT_RADAR_PROVIDER === 'claude'
+          ? new MetaMcpAdSource({ readTools: metaReadTools, workDir: join(paths.data, 'meta-mcp') })
+          : new CodexMcpAdSource({ workDir: join(paths.data, 'meta-mcp') })
         : null,
       generator: textGenerator ?? null,
       advisor,

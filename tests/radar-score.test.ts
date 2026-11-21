@@ -158,3 +158,13 @@ describe('nota de triagem do Radar', () => {
     assert.deepEqual(scoreCandidate(entrada), scoreCandidate({ ...entrada }));
   });
 });
+
+test('nota conhecida já no corte passa mesmo sem o entregável (teste real 21/11, Método QAP)', () => {
+  const s = scoreCandidate({ anunciosAtivos: 12, diasNoAr: 52, anunciantesNoNicho: 21, precoOrigem: 97, entregavelEmPdf: null });
+  assert.equal(s.nota, 7);
+  assert.equal(s.parcial, true);
+  assert.equal(acimaDoCorte(s), true);
+  const baixa = scoreCandidate({ anunciosAtivos: 83, diasNoAr: 0, anunciantesNoNicho: 21, precoOrigem: null, entregavelEmPdf: null });
+  assert.equal(baixa.nota, 5);
+  assert.equal(acimaDoCorte(baixa), false);
+});

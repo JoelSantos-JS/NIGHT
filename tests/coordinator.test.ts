@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import pg from 'pg';
-import { forSpeech, nightDataRoot, NightCoordinator, PALAVRAS_LOW_TICKET } from '../src/app/coordinator.ts';
+import { forSpeech, nightDataRoot, NightCoordinator, PALAVRAS_LOW_TICKET, PALAVRAS_PRECO_BAIXO, palavrasDaRodada, palavrasDoPedido } from '../src/app/coordinator.ts';
 import { QuotaError } from '../src/agents/research.ts';
 import type { Job, Project } from '../src/core/types.ts';
 import type { JobRunner } from '../src/jobs/runner.ts';
@@ -168,8 +168,27 @@ describe('NightCoordinator', () => {
   test('Radar de low-ticket varre as frases do método, não a palavra "low ticket"', async () => {
     await night.handle('vasculha ofertas de low ticket');
     const [radar] = await mem.listJobs({ kind: 'radar' });
-    assert.deepEqual(radar!.params, { query: 'low ticket', keywords: PALAVRAS_LOW_TICKET, planejarNichos: true });
+    // Frases de preço do PDF, poucas por rodada; nada de nichos do Codex (traziam página sem preço, teste real 21/11).
+    assert.deepEqual(radar!.params, { query: 'low ticket', keywords: palavrasDaRodada() });
     assert.ok(PALAVRAS_LOW_TICKET.includes('acesso vitalício'));
+  });
+
+  test('valores mais baixos: frases de R$ 9,90 a R$ 37 (Joel, 21/11)', async () => {
+    for (const t of ['pesquisa ofertas low ticket com valores mais baixos', 'vasculha ofertas de R$ 9,90', 'use o radar e procura ofertas baratas']) {
+      assert.ok(palavrasDoPedido(t).every((p) => PALAVRAS_PRECO_BAIXO.includes(p)), t);
+    }
+    assert.ok(palavrasDoPedido('vasculha ofertas de low ticket').every((p) => PALAVRAS_LOW_TICKET.includes(p)));
+    await night.handle('vasculha ofertas de R$ 9,90');
+    const [radar] = await mem.listJobs({ kind: 'radar' });
+    assert.ok((radar!.params.keywords as string[]).every((p) => PALAVRAS_PRECO_BAIXO.includes(p)));
+  });
+
+  test('frases da rodada: 3 por vez, girando por dia e cobrindo a lista', () => {
+    const dia = (n: number) => new Date(n * 86_400_000);
+    assert.equal(palavrasDaRodada(dia(0), 3).length, 3);
+    const vistas = new Set([0, 1, 2].flatMap((d) => palavrasDaRodada(dia(d), 3)));
+    assert.equal(vistas.size, PALAVRAS_LOW_TICKET.length);
+    assert.deepEqual(palavrasDaRodada(dia(0), 1), [PALAVRAS_LOW_TICKET[0]]);
   });
 
   test('pedido repetido no mesmo minuto não cria outro trabalho', async () => {

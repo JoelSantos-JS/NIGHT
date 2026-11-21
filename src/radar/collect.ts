@@ -4,6 +4,7 @@
 // Nenhum campo é inventado: o que a fonte não mandou fica null e entra em unknown_fields.
 
 import type { NewCandidate, PgRadarStore } from './store.ts';
+import { QuotaError } from '../agents/research.ts';
 
 /** Parâmetros de rastreio que não mudam a página de destino. */
 const PARAMS_EXTRA = new Set(['fbclid', 'gclid', 'ttclid']);
@@ -42,6 +43,8 @@ export interface CollectOptions {
   maxPages: number;
   /** Avisos da busca por nicho (anúncio ou página descartada e por quê), para o relatório. */
   onAviso?: (texto: string) => void;
+  /** Conferido antes de cada palavra-chave: cancelado, para sem abrir outra sessão. */
+  cancelado?: () => boolean;
 }
 
 export interface CollectCounters {
@@ -151,12 +154,28 @@ export async function collect(
   store: CollectStore, source: AdSource, opts: CollectOptions,
 ): Promise<Record<string, CollectCounters>> {
   const porPalavra: Record<string, CollectCounters> = {};
+  let falhas = 0;
+  let ultimaFalha: unknown = null;
 
   for (const keyword of opts.keywords) {
+    if (opts.cancelado?.()) break;
     const conta: CollectCounters = { vistos: 0, novos: 0, duplicados: 0, incompletos: 0 };
     if (source.nicheScan) {
       // Uma sessão por nicho; cursor não existe nesta ferramenta.
-      const { ads, observacoes } = await source.nicheScan(keyword);
+      // Nicho que falha vira aviso e o Radar segue com os outros (teste real 21/11: um nicho derrubava tudo).
+      // Limite de uso para na hora: os próximos nichos bateriam no mesmo limite.
+      let scan: Awaited<ReturnType<NonNullable<AdSource['nicheScan']>>>;
+      try {
+        scan = await source.nicheScan(keyword);
+      } catch (err) {
+        if (err instanceof QuotaError) throw err;
+        falhas++;
+        ultimaFalha = err;
+        opts.onAviso?.(`${keyword}: a busca falhou (${(err as Error).message.slice(0, 200)})`);
+        porPalavra[keyword] = conta;
+        continue;
+      }
+      const { ads, observacoes } = scan;
       for (const o of observacoes) opts.onAviso?.(`${keyword}: ${o}`);
       for (const ad of ads) {
         const novo = toCandidate(ad, source.name, keyword, opts.jobId);
@@ -194,5 +213,7 @@ export async function collect(
     porPalavra[keyword] = conta;
   }
 
+  // Todos os nichos falharam: o Radar falha com o motivo, em vez de dizer "0 ofertas".
+  if (falhas > 0 && falhas === opts.keywords.length) throw ultimaFalha;
   return porPalavra;
 }

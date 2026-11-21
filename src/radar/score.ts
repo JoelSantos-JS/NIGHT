@@ -168,7 +168,10 @@ export function scoreCandidate(input: ScoreInput): ScoreResultado {
 
 /** Parcial só passa com os três critérios visíveis da busca da Meta. */
 export function acimaDoCorte(score: ScoreResultado): boolean {
-  if (!score.parcial) return score.nota >= CORTE_TRIAGEM;
+  // Os pontos que se vê já chegam ao corte: o que falta só pode somar (teste real 21/11: nota 7 com
+  // "entregável não visível" ficava de fora).
+  if (score.nota >= CORTE_TRIAGEM) return true;
+  if (!score.parcial) return false;
   if (score.maximoPossivel === 0 || score.nota / score.maximoPossivel < CORTE_TRIAGEM / 10) return false;
   return score.faltando.every((nome) => nome === 'diasNoAr' || nome === 'precoOrigem');
 }

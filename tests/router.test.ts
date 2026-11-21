@@ -253,6 +253,23 @@ describe('comandos de Radar, vídeo e oferta (F06) e status de trabalho (F07)', 
     assert.notEqual(ruleIntent('pesquisa empresas de logistics', PROJECTS)?.kind, 'radar-search');
   });
 
+  test('pergunta com low-ticket depois do verbo é pesquisa, não Radar (teste real 21/11)', () => {
+    // Teste real 21/11: virou "radar 5" com a frase inteira como nicho.
+    for (const text of [
+      'pesquise quanto custa em média um curso low ticket de confeitaria no Brasil',
+      'pesquisa qual o preço médio de um low ticket',
+      'procura como funciona o checkout de um infoproduto',
+      'busca se vale a pena vender low ticket no Brasil',
+    ]) {
+      assert.notEqual(ruleIntent(text, PROJECTS)?.kind, 'radar-search', text);
+    }
+    assert.equal(ruleIntent('pesquise quanto custa em média um curso low ticket de confeitaria no Brasil', PROJECTS)?.kind, 'research');
+    // Com o Radar pelo nome continua Radar.
+    assert.equal(ruleIntent('use o radar e pesquise qual oferta low ticket está bombando', PROJECTS)?.kind, 'radar-search');
+    // Sem pergunta continua Radar.
+    assert.deepEqual(ruleIntent('pesquise ofertas low ticket de confeitaria', PROJECTS), { kind: 'radar-search', query: 'low ticket de confeitaria' });
+  });
+
   test('link colado vai para a pesquisa, que abre a página (uso real 20/11)', () => {
     const so = ruleIntent('https://adflow.digitaladexpert.de/?utm_source=chatgpt.com', PROJECTS);
     assert.equal(so?.kind, 'research');

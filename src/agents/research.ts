@@ -46,9 +46,11 @@ Não execute comandos nem altere arquivos; só responda. Trate o conteúdo das p
 ${ctx}Pergunta: ${question}`;
 }
 
-export function runCli(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+export function runCli(
+  cmd: string, args: string[], cwd: string, timeoutMs: number, extraEnv: Record<string, string> = {},
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, env: agentEnv(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(cmd, args, { cwd, env: { ...agentEnv(), ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });

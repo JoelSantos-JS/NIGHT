@@ -380,6 +380,8 @@ export class RadarWorker implements JobWorker {
         jobId: request.jobId, keywords, maxPerKeyword, maxPages,
         // Até 20 avisos da busca: o suficiente para entender por que vieram menos candidatos.
         onAviso: (texto) => { if (avisos.length < 20) avisos.push(texto); },
+        // Cancelado: não abre o próximo nicho (teste real 21/11: abriu uma sessão nova depois do cancelar).
+        cancelado: () => run.cancelled,
       });
       coleta = acumular(coleta, novasContas);
       await this.salvarRelatorio(request.jobId, this.montarRelatorio({

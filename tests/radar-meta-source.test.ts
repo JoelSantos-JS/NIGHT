@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import type { MetaMcpRun } from '../src/radar/meta-mcp-source.ts';
-import { MetaMcpAdSource } from '../src/radar/meta-mcp-source.ts';
+import { MetaMcpAdSource, precoDosTitulos } from '../src/radar/meta-mcp-source.ts';
 
 /** Executor falso: guarda a chamada e devolve o que o teste mandar. */
 class FakeRun {
@@ -133,6 +133,37 @@ describe('sessão do Claude Code com o MCP da Meta', () => {
     await assert.rejects(fonte(semBruto).nicheScan('planilhas'), /não mostrou a resposta da Meta/);
   });
 
+  test('preço e início vêm do título e da data que a Meta mostrou; acento escapado conta (teste real 21/11)', async () => {
+    const ads = [
+      { id: '21', page_id: '201', page_name: 'Método QAP', ad_creative_link_title: 'Sua preparação para GCM por apenas R$ 97,00', ad_delivery_start_time: 1795256848 },
+      { id: '22', page_id: '201', page_name: 'Método QAP', ad_creative_link_title: 'Sua preparação para GCM por apenas R$ 97,00', ad_delivery_start_time: 1792000000 },
+    ];
+    // Como a Meta manda: acento como ç (o JSON.stringify do Node não escapa, então o teste escapa à mão).
+    const escapar = (s: string) => s.replace(/[\u007f-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    const bruto = escapar(brutoMeta(10494, ads)) + '\n' + escapar(brutoMeta(40, ads));
+    const titulo = 'Sua preparação para GCM por apenas R$ 97,00';
+    const payload = {
+      termo: 'apenas R$ 97', estimatedTotal: 10494,
+      ads: [{ id: '21', page_id: '201', page_name: 'Método QAP', title: titulo, delivery_start: 1795256848 }],
+      paginas: [{ page_id: '201', page_name: 'Método QAP', activeEstimated: 40, inicioMaisAntigo: 1792000000, titulos: [titulo] }],
+    };
+    const result = await fonte(new FakeRun(() => ({ code: 0, stdout: saidaStream(payload, bruto), stderr: '' }))).nicheScan('apenas R$ 97');
+    assert.deepEqual(result.ads[0]?.titulos, [titulo]);
+    assert.equal(result.ads[0]?.precoOrigem, 97);
+    assert.equal(result.ads[0]?.startedAt, new Date(1792000000 * 1000).toISOString().slice(0, 10));
+    // Data que a Meta não mostrou não vale.
+    const inventada = { ...payload, paginas: [{ ...payload.paginas[0]!, inicioMaisAntigo: 1500000000 }] };
+    const r2 = await fonte(new FakeRun(() => ({ code: 0, stdout: saidaStream(inventada, bruto), stderr: '' }))).nicheScan('apenas R$ 97');
+    assert.equal(r2.ads[0]?.startedAt, new Date(1795256848 * 1000).toISOString().slice(0, 10));
+  });
+
+  test('preço do título: menor valor cobrado, sem R$ é nulo', () => {
+    assert.equal(precoDosTitulos(['Sua preparação por apenas R$ 97,00']), 97);
+    assert.equal(precoDosTitulos(['De R$ 197 por R$ 67 só hoje']), 67);
+    assert.equal(precoDosTitulos(['Curso de R$ 1.997 por R$ 297']), 297);
+    assert.equal(precoDosTitulos(['Aprenda confeitaria', 'frete R$ 2']), null);
+  });
+
   test('nicheScan descarta anúncio sem page_id ou fora da resposta, e aceita anúncio sem título', async () => {
     const payload = {
       termo: 'receitas', estimatedTotal: 3,
@@ -177,7 +208,7 @@ describe('sessão do Claude Code com o MCP da Meta', () => {
     const chamada = fake.calls[0]!;
     assert.equal(chamada.bin, 'claude-fake');
     assert.equal(chamada.cwd, dir, 'a sessão roda na pasta de trabalho da fonte');
-    assert.equal(chamada.timeoutMs, 180_000);
+    assert.equal(chamada.timeoutMs, 360_000);
     assert.ok(chamada.args.includes('--strict-mcp-config'));
     assert.ok(chamada.args.includes('--no-session-persistence'));
     assert.equal(chamada.args[chamada.args.indexOf('--output-format') + 1], 'json');
