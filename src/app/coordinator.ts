@@ -65,8 +65,11 @@ const LOW_TICKET = /\b(low[ -]?ticket|infoprodutos?|produtos? digita(l|is))\b/i;
  * "valores mais baixos" (Joel, 21/11): o que já vende barato, de R$ 9,90 a R$ 37. Pela rubrica do PDF, origem abaixo
  * de R$ 37 vale 0 no preço: são os concorrentes do preço final, não a oferta cara para baratear.
  */
+// Preço sozinho ("apenas R$ 19,90") traz loja de roupa ("Pague 3 e Leve 6 Blusinhas", teste real 21/11): a frase
+// precisa de uma palavra de produto digital. "ebook R$ 19,90" e "acesso imediato R$ 19,90" trouxeram e-book e PDF.
 export const PALAVRAS_PRECO_BAIXO = [
-  'apenas R$ 9,90', 'por apenas R$ 19,90', 'apenas R$ 19,90', 'por R$ 27', 'apenas R$ 27', 'apenas R$ 37',
+  'ebook R$ 19,90', 'acesso imediato R$ 19,90', 'ebook R$ 9,90', 'acesso imediato R$ 9,90',
+  'ebook R$ 27', 'acesso imediato R$ 27',
 ];
 const PRECO_BAIXO = /\b(barat[oa]s?|mais baix[oa]s?|valor(es)? (mais )?baix[oa]s?|pre[cç]os? (mais )?baix[oa]s?|menor(es)? (valor|pre[cç])|r\$ ?(9|19|27)\b)/i;
 

@@ -26,8 +26,10 @@ Passagens anteriores (no histórico do git):
 - **Servidor:** rodando com `NIGHT_RADAR_BUSCAS=1` (1 busca por rodada). Sem a variável, são 3.
 - **OpenBot:** precisa estar **aberto** para o Executor e as telas (ele só escreve `url` e `token` em `%APPDATA%\OpenBot\automation` quando abre). Com ele fechado, a cópia do pedido falha e vai para o log.
 - **O Radar agora busca pelo Codex por padrão** ([src/radar/codex-mcp-source.ts](../src/radar/codex-mcp-source.ts), feito pelo Codex e revisado/testado pelo Claude). `NIGHT_RADAR_PROVIDER=claude` volta para a sessão do Claude. O Codex já está ligado ao MCP da Meta (OAuth) e só pode usar `ads_library_search` (`enabled_tools`); qualquer outra ferramenta da Meta derruba a busca.
-- **Os dois bateram limite em 21/11 de manhã:** Claude (sessão, "resets 11:40am America/Bahia"; semana em 91%) e Codex (até 11:54). A busca real pelo Codex **ainda não foi provada** (seção 3.1, item 0).
-- **"Valores mais baixos":** pedido com "barato", "valor mais baixo", "R$ 9,90/19/27" usa `PALAVRAS_PRECO_BAIXO` (R$ 9,90 a R$ 37) em vez das frases caras do PDF. Pela rubrica, origem abaixo de R$ 37 vale 0 no preço: são os concorrentes do preço final.
+- **Busca pelo Codex provada (Radar 10, 21/11 ao meio-dia):** "ebook R$ 19,90" → 3 páginas, uma com 110 anúncios ativos e nota 6 → **oferta 2** montada pelo DeepSeek, ~3 min no total.
+  - Só funciona com o Codex do OpenBot (0.171): o da extensão do VS Code (0.155) conecta mas não carrega a ferramenta da Meta. O `bootstrap` passa `findCodexLiveBin()`; `NIGHT_RADAR_CODEX_BIN` troca.
+  - A oferta 2 saiu genérica porque o gerador não via o produto (títulos iam em `titulos`, ele lê `anuncioTexto`). Consertado depois; **rodar de novo para conferir** que a oferta fala do produto anunciado.
+- **"Valores mais baixos":** pedido com "barato", "valor mais baixo", "R$ 9,90/19/27" usa `PALAVRAS_PRECO_BAIXO` ("ebook R$ 19,90", "acesso imediato R$ 9,90"…) em vez das frases caras do PDF. Preço sozinho ("apenas R$ 19,90") trazia loja de roupa; com "ebook"/"acesso imediato" vem produto digital. Pela rubrica, origem abaixo de R$ 37 vale 0 no preço: são os concorrentes do preço final.
 
 ---
 
@@ -68,7 +70,9 @@ Passagens anteriores (no histórico do git):
 ## 3. O que falta fazer, em ordem
 
 ### 3.1 Radar (com o Joel)
-0. **Provar a busca pelo Codex:** pelo PowerShell (no Git Bash o `HOME` vira `/c/...`), `node --import tsx lab/repro-codex.ts "apenas R$ 19,90"`. Pronto quando voltar total, páginas e títulos conferidos. Falha "Codex não conseguiu consultar a Meta" = o MCP não carregou (ver `startup_timeout_sec`).
+0. **Conferir a oferta com o produto:** "use o radar para pesquisar ofertas low ticket com valores mais baixos" e "mostra a oferta N": tem que falar do produto anunciado, não "oferta de baixo ticket em PDF". Busca avulsa: `node --import tsx lab/repro-codex.ts "ebook R$ 19,90"` (com `CODEX_BIN` do OpenBot).
+   - "Origem não visível" em quase tudo: muitos títulos não têm "R$". Ler o preço do texto do anúncio (corpo) também.
+   - "1 dia no ar" em quase tudo: o Codex pegou o início do anúncio mais novo? Conferir `inicioMaisAntigo` na saída crua.
    - Também: o agente NIGHT Radar do OpenBot respondeu "ainda não há ofertas" quando o trabalho **falhou** por limite (recado do Codex). Fazer o status dizer a falha.
 1. **Rodar o Radar uma vez** (depois de 24/11 08:00, ou antes se o Joel quiser gastar): "use o radar para pesquisar oferta low tickets". Pronto quando a Método QAP ou outra com nota ≥ 6 **virar oferta no painel**.
 2. **Entregável em PDF** fica sempre "não visível": o classificador ([src/radar/meta-mcp-source.ts](../src/radar/meta-mcp-source.ts), `deepSeekPdfClassifier`) recebe só a frase ("apenas R$ 97"). Precisa ver o produto (título conferido), tratando o título como dado de terceiro (revisão do Codex de 20/11 era contra; decidir com cuidado, talvez limitar a resposta a true/false e pedir revisão).

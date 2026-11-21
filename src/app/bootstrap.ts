@@ -35,6 +35,7 @@ import { PgOfferLinks } from '../lowticket/links.ts';
 import { LowticketWorker } from '../lowticket/worker.ts';
 import { MetaMcpAdSource } from '../radar/meta-mcp-source.ts';
 import { CodexMcpAdSource } from '../radar/codex-mcp-source.ts';
+import { findCodexLiveBin } from './voz-ao-vivo.ts';
 import { OpenBotEspelho } from '../openbot/espelho.ts';
 
 /** Pasta de dados do NIGHT; cada parte fica fora do repositório. */
@@ -201,7 +202,11 @@ export async function createNight(opts: CreateNightOptions = {}) {
       source: metaReadTools.length
         ? process.env.NIGHT_RADAR_PROVIDER === 'claude'
           ? new MetaMcpAdSource({ readTools: metaReadTools, workDir: join(paths.data, 'meta-mcp') })
-          : new CodexMcpAdSource({ workDir: join(paths.data, 'meta-mcp') })
+          : new CodexMcpAdSource({
+            workDir: join(paths.data, 'meta-mcp'),
+            // O Codex do OpenBot (>= 0.156): o da extensão do VS Code (0.155) não carrega o conector da Meta (21/11).
+            bin: process.env.NIGHT_RADAR_CODEX_BIN ?? findCodexLiveBin() ?? undefined,
+          })
         : null,
       generator: textGenerator ?? null,
       advisor,

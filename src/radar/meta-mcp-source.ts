@@ -398,6 +398,8 @@ export async function interpretarNicheScan(
       anunciantesNoNicho,
       entregavelEmPdf,
       titulos,
+      // O gerador da oferta lê o produto daqui; sem isso recebia "não visível" e saía oferta genérica (teste real 21/11).
+      ...(titulos.length > 0 ? { anuncioTexto: [...new Set(titulos)].join(' | ') } : {}),
       page_id: pageId,
       ...(precoOrigem !== null ? { precoOrigem } : {}),
       ...(startedAt !== null ? { startedAt } : {}),

@@ -150,6 +150,7 @@ describe('sessão do Claude Code com o MCP da Meta', () => {
     const result = await fonte(new FakeRun(() => ({ code: 0, stdout: saidaStream(payload, bruto), stderr: '' }))).nicheScan('apenas R$ 97');
     assert.deepEqual(result.ads[0]?.titulos, [titulo]);
     assert.equal(result.ads[0]?.precoOrigem, 97);
+    assert.equal(result.ads[0]?.anuncioTexto, titulo, 'o gerador da oferta vê o produto');
     assert.equal(result.ads[0]?.startedAt, new Date(1792000000 * 1000).toISOString().slice(0, 10));
     // Data que a Meta não mostrou não vale.
     const inventada = { ...payload, paginas: [{ ...payload.paginas[0]!, inicioMaisAntigo: 1500000000 }] };
