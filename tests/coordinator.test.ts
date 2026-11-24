@@ -210,7 +210,7 @@ describe('NightCoordinator', () => {
     const consultas = consultasComDominioDaRodada(new Date(0), 3);
     assert.equal(consultas.length, 3);
     for (const consulta of consultas) assert.match(consulta, /^\S+\.\S+ .+$/);
-    assert.deepEqual(consultas, ['vercel.app atividades para imprimir', 'netlify.app caderno de atividades', 'lovable.app apostila pdf']);
+    assert.deepEqual(consultas, ['vercel.app atividades para imprimir', 'lovable.app caderno de atividades', 'netlify.app apostila pdf']);
     assert.deepEqual(consultasComDominioDaRodada(new Date(0), 1), ['vercel.app atividades para imprimir']);
   });
 

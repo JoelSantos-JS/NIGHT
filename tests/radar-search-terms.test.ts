@@ -24,7 +24,7 @@ test('domínio de hospedagem é pista de descoberta, inclusive subdomínio', () 
   assert.equal(ehDominioDescoberta('vercel.app.malicioso.com'), false);
   assert.equal(ehDominioDescoberta('minha-marca.com.br'), false);
   assert.deepEqual(consultasDeDominio('  atividades   pdf ', 2), [
-    'vercel.app atividades pdf', 'netlify.app atividades pdf',
+    'vercel.app atividades pdf', 'lovable.app atividades pdf',
   ]);
 });
 
@@ -44,7 +44,7 @@ test('consulta domínio+tag usa keyword_unordered e nunca busca o host isolado',
     assert.match(consulta.termo, /^\S+\.\S+ .+$/, 'domínio + tag, não host sozinho');
   }
   assert.deepEqual(consultas.map((c) => c.termo), [
-    'vercel.app atividades pdf', 'netlify.app atividades pdf', 'lovable.app atividades pdf',
+    'vercel.app atividades pdf', 'lovable.app atividades pdf', 'netlify.app atividades pdf',
   ]);
 });
 

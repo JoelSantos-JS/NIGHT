@@ -43,6 +43,12 @@ function comPaginas(texto: string, links: [string, string][]): string {
   return `${texto}${MARCA_PAGINAS}${JSON.stringify(links)}`;
 }
 
+/** Card mínimo para testar o filtro de produto digital. */
+function cardSimples(corpo: string, titulo = 'Oferta'): CardBiblioteca {
+  return { id: '1', inicio: null, pagina: 'Anunciante', corpo, titulo,
+    host: null, dominio: null, destino: null, compartilhado: false, copias: 1 };
+}
+
 /** `abrir` falso: responde por parâmetro `q` ou `view_all_page_id`; o resto é "sem resultado". */
 function abridor(respostas: (url: URL) => string | undefined): (url: string) => Promise<string> {
   return async (bruta) => {
@@ -59,6 +65,29 @@ test('preço e acesso no app de loja física não tornam o produto digital', () 
     titulo: 'Oferta de roupas', host: null, dominio: null, destino: null, compartilhado: false, copias: 1 };
   assert.equal(ehProdutoDigital(loja), false);
   assert.equal(ehProdutoDigital({ ...loja, corpo: 'Atividades em PDF para imprimir.' }), true);
+});
+
+test('assinatura, mensal ou plano anual não vira produto digital mesmo com PDF', () => {
+  assert.equal(ehProdutoDigital(cardSimples('Assinatura anual com mapas mentais em PDF')), false);
+  assert.equal(ehProdutoDigital(cardSimples('Plano mensal do Audible: e-book em PDF incluso')), false);
+  assert.equal(ehProdutoDigital(cardSimples('Finclass: plano anual com PDF de resumo')), false);
+});
+
+test('banco, cartão de crédito e empréstimo ficam de fora mesmo com PDF', () => {
+  assert.equal(ehProdutoDigital(cardSimples('Banco: empréstimo com crédito aprovado; baixe o PDF')), false);
+  assert.equal(ehProdutoDigital(cardSimples('Cartão de crédito sem anuidade: planner digital em PDF')), false);
+});
+
+test('streaming não vira produto digital mesmo com apostila em PDF', () => {
+  assert.equal(ehProdutoDigital(cardSimples('Streaming de aulas com apostila em PDF')), false);
+});
+
+test('mapa mental em PDF por R$ 19,90 continua sendo produto digital', () => {
+  assert.equal(ehProdutoDigital(cardSimples('Mapa mental em PDF por R$ 19,90', 'Mapa mental completo')), true);
+});
+
+test('apostila de atividades para imprimir continua sendo produto digital', () => {
+  assert.equal(ehProdutoDigital(cardSimples('Apostila de atividades para imprimir, material em PDF.')), true);
 });
 
 test('host compartilhado agrupa por página e não soma vendedores', async () => {

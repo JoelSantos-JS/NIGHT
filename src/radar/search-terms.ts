@@ -38,9 +38,8 @@ export const TAGS_OFERTA = {
 
 /** Hosts das capturas. Uma consulta por host precisa ser cruzada com tag de produto e página do anunciante. */
 export const DOMINIOS_DESCOBERTA = [
-  'vercel.app', 'netlify.app', 'lovable.app', 'paginas.lowify.com.br', 'gamma.site',
-  'replit.app', 'bolt.host', 'framer.website', 'webflow.io', 'pages.dev',
-  'wixsite.com', 'carrd.co', 'notion.site',
+  // As que mais trazem low-ticket, segundo o Joel (24/11).
+  'vercel.app', 'lovable.app', 'netlify.app', 'paginas.lowify.com.br',
 ] as const;
 
 /**

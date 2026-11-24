@@ -1,6 +1,6 @@
 # NIGHT: passagem para o próximo chat
 
-**Escrito em 24/11/2026.** Para um Claude novo e para o Joel. Leia inteiro antes de mexer, e depois leia
+**Escrito em 24/11/2026.** O estado mais novo está em [PASSAGEM_ANTIGRAVITY.md](PASSAGEM_ANTIGRAVITY.md): ler aquele primeiro. Para um Claude novo e para o Joel. Leia inteiro antes de mexer, e depois leia
 [.agents/em-andamento.md](../.agents/em-andamento.md): os recados do Codex de 21 e 22/11 estão lá, com os detalhes.
 
 Passagem anterior (21/11, Radar pelo Codex/MCP): `git show a543127:docs/PROXIMO_CHAT.md`.
@@ -10,6 +10,36 @@ Passagem anterior (21/11, Radar pelo Codex/MCP): `git show a543127:docs/PROXIMO_
 > webapp, atividade para imprimir. Pelo PDF do Franklim, acha a oferta validada (de preferência cara, R$ 47–97) e
 > vende a própria versão por R$ 9,90–19,90.
 > **Próximo passo combinado:** testar o fluxo inteiro do NIGHT com o OpenBot (seção 3).
+
+---
+
+## 0. Atualização do fim de 24/11 (ler primeiro)
+
+### 0.1 Gasto de tokens
+- O meta-ads **saiu do Claude Code no D:\NIGHT** (`claude mcp remove meta-ads -s local`). O NIGHT não precisa dele aqui:
+  `meta-writer.ts` e `meta-reader.ts` montam a própria configuração por sessão. Cópia de segurança do arquivo:
+  `~/.claude.json.bak-20261124-mcp`.
+- Os conectores do claude.ai foram desligados neste projeto com `ENABLE_CLAUDEAI_MCP_SERVERS=false` em
+  `.claude/settings.local.json`. **Conferir no chat novo com `/context`**: o MCP deve ter só o caveman e o codegraph.
+  Se os conectores ainda aparecerem, achar outro jeito de desligar.
+
+### 0.2 Campanha automática sem login (o Joel quer tudo sozinho)
+- **Problema:** o conector meta-ads usa login pelo navegador, que expira. Assim o NIGHT não roda sozinho.
+- **Feito:** usuário do sistema **NIGHT** no Gerenciador de Negócios, ligado ao app **MCP** (em desenvolvimento, com os
+  casos de uso de Marketing, Instagram e Página). O token está na variável de usuário do Windows `NIGHT_META_TOKEN`
+  (nunca no código, no git ou em log). Conferido pela API: ele enxerga a conta de anúncios **"Joel Novo"** (BRL, ativa) e
+  a Página **"Coreano Visual"**.
+- **Pendente:**
+  1. O token **expira por volta de 23/01/2027** e **ficou exposto no chat de 24/11**. Gerar um novo com validade
+     "Nunca", salvar com `[Environment]::SetEnvironmentVariable('NIGHT_META_TOKEN', (Read-Host 'Cole o token'), 'User')`
+     e revogar o antigo. O Joel pediu para deixar isso para depois.
+  2. A Página não tem Instagram profissional ligado e atribuído ao NIGHT. Sem isso, não há post nem anúncio no
+     Instagram.
+  3. **Código:** trocar a criação de campanha (`src/ads/meta-writer.ts`) do conector MCP para a API de Marketing
+     (graph.facebook.com) com `NIGHT_META_TOKEN`, como já faz `src/video/publish.ts`. Manter as travas: PAUSADO e
+     orçamento conferido. Revisão do Codex antes de dizer pronto, porque mexe com dinheiro.
+  4. **Decisão do Joel ainda não respondida:** a campanha pronta (a) fica pausada até ele ligar no painel, ou (b) liga
+     sozinha com um limite de gasto por dia?
 
 ---
 

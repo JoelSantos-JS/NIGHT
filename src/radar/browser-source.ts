@@ -180,6 +180,11 @@ export function lerCards(textoCompleto: string): CardBiblioteca[] {
  */
 const FORMATO_DIGITAL = /\b(pdf|e-?books?|apostilas? (?:em )?pdf|apostilas? digitais?|mapas? mentai?s? (?:em )?pdf|planners? digita(l|is)|cadernos? digita(l|is)|guias? digita(l|is)|kits? digita(l|is)|materia(l|is) digita(l|is)|livros? digita(l|is)|templates?|planilhas? (?:em )?pdf|checklists? (?:em )?pdf|web ?apps?|download imediato|[aá]rea de membros|flashcards? (?:em )?pdf|atividades? (para imprimir|imprim[ií]veis)|imprim[ií]ve(l|is))\b/i;
 // "app" e "aplicativo" sozinhos ficaram de fora: "no App do Méqui" e banco digital passariam (teste real 21/11).
+/**
+ * Assinatura, plataforma ou marca grande que às vezes cita PDF/mapa mental para atrair: não é produto
+ * low-ticket do Joel (21/11). Barra mesmo quando o texto tem "PDF" — o formato sozinho não decide.
+ */
+const ASSINATURA_OU_MARCA = /\b(?:assinaturas?|mensalidades?|cobran[çc]a mensal|planos?\s+(?:anual|mensal)|finclass|audible|bancos?(?!\s+de\s+(?:atividades|quest[õo]es|imagens|ideias|dados))|cart(?:[ãa]o|[õo]es)\s+de\s+cr[eé]dito|empr[eé]stimos?|cr[eé]dito\s+aprovado|streamings?)\b/i;
 /** Entrega que exige gravar vídeo: o critério 5 do PDF é "sem gravar vídeo". */
 const PRECISA_VIDEO = /\b(videoaulas?|v[ií]deo-?aulas?|aulas gravadas|aulas ao vivo|curso em v[ií]deo|mentoria|encontros? ao vivo|lives? semana(l|is))\b/i;
 /** O que se entrega sem gravar vídeo (PDF, app). */
@@ -226,7 +231,10 @@ export function textoDoCard(c: CardBiblioteca): string {
 }
 
 export function ehProdutoDigital(c: CardBiblioteca): boolean {
-  return FORMATO_DIGITAL.test(textoDoCard(c));
+  const texto = textoDoCard(c);
+  // Assinatura, plataforma ou marca grande não é produto low-ticket, mesmo citando PDF ou mapa mental.
+  if (ASSINATURA_OU_MARCA.test(texto)) return false;
+  return FORMATO_DIGITAL.test(texto);
 }
 
 /** true: entrega sem vídeo; false: pede vídeo; null: o texto não diz. */
