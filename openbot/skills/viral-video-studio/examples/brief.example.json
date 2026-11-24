@@ -1,0 +1,8 @@
+{
+ "job_id":"demo-gravidade-001",
+ "brief":"O que aconteceria se a gravidade desaparecesse por 10 segundos?",
+ "language":"pt-BR","style":"stickman-2d","duration_seconds":45,
+ "targets":["instagram_reels","facebook_reels","tiktok","youtube_shorts"],
+ "approval_mode":"review_before_publish","reference_url":null,
+ "production_budget":"requires-operator-approval"
+}

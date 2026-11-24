@@ -27,6 +27,7 @@ import { FlowFolderProvider, writePromptSheet } from './flow-folder.ts';
 import { readyForFinalRender, validateManifest, type Scene, type VideoManifest } from './manifest.ts';
 import type { NarrateAllResult } from './narrate.ts';
 import type { Narrator } from './narrate.ts';
+import { renderWithRemotion } from './remotion-render.ts';
 import { generateManifest, type ScriptGenerator } from './script.ts';
 import {
   planRender,
@@ -41,15 +42,18 @@ import {
   type RunCommand,
   type RunResult,
 } from './review.ts';
+import { templateRequiresImages } from './templates.ts';
 
-/** Fonte de imagens já importadas (Flow ou outra): null = a cena ainda não tem imagem. */
+/** Fonte de imagens já importadas (Flow, GPT Image ou outra): null = a cena ainda não tem imagem. */
 export interface ImageProvider {
-  find(jobId: string, scene: Scene): Promise<string | null>;
+  find(jobId: string, scene: Scene, manifest?: VideoManifest): Promise<string | null>;
   /**
    * Origem gravada no store para as imagens deste provider. O padrão é 'flow';
    * providers de outra fonte declaram a origem aqui.
    */
   readonly origin?: string;
+  /** Origem específica da cena quando o provider combina múltiplas fontes (ex.: Flow + GPT). */
+  originFor?(jobId: string, scene: Scene): string | undefined;
   /**
    * Opcional: grava a folha de prompts no local do provider e devolve a pasta usada.
    * É o caminho manual do Flow gratuito: o Joel gera no navegador e o NIGHT retoma.
@@ -64,6 +68,8 @@ export interface ImageProvider {
 export interface ReviewContext {
   preview: boolean;
   expectedDurationSec: number;
+  checkBlackFrames?: boolean;
+  extractFramesDir?: string;
 }
 
 export interface VideoAgentDeps {
@@ -76,6 +82,10 @@ export interface VideoAgentDeps {
   semVoz?: boolean;
   /** Padrão: renderVideo (FFmpeg real). */
   render?: (plan: RenderPlan) => Promise<RenderResult>;
+  /** Padrão: renderWithRemotion (estúdio Remotion em services/video-studio). */
+  remotionRender?: (plan: RenderPlan, manifest: VideoManifest) => Promise<RenderResult>;
+  /** Ativa detecção de quadros pretos e extração de frames na revisão automática. */
+  visualQa?: boolean;
   /** Padrão: revisão com runReview/reviewRender e ffprobe/ffmpeg reais. */
   review?: (file: string, manifest: VideoManifest, opts: ReviewContext) => Promise<ReviewResult>;
   /** Comando da revisão padrão; injetável nos testes para simular o ffprobe/ffmpeg. */
@@ -156,6 +166,8 @@ function revisaoPadrao(run: RunCommand) {
     runReview(file, manifest, run, {
       preview: opts.preview,
       expectedDurationSec: opts.expectedDurationSec,
+      ...(opts.checkBlackFrames ? { checkBlackFrames: true } : {}),
+      ...(opts.extractFramesDir !== undefined ? { extractFramesDir: opts.extractFramesDir } : {}),
     });
 }
 
@@ -278,6 +290,8 @@ export class VideoAgent implements JobWorker {
   private readonly narrator: Narrator;
   private readonly semVoz: boolean;
   private readonly render: (plan: RenderPlan) => Promise<RenderResult>;
+  private readonly remotionRender: (plan: RenderPlan, manifest: VideoManifest) => Promise<RenderResult>;
+  private readonly visualQa: boolean;
   private readonly review: (file: string, manifest: VideoManifest, opts: ReviewContext) => Promise<ReviewResult>;
   private readonly images: ImageProvider;
   private readonly workDir: string;
@@ -295,6 +309,8 @@ export class VideoAgent implements JobWorker {
     this.narrator = deps.narrator;
     this.semVoz = deps.semVoz ?? false;
     this.render = deps.render ?? ((plan) => renderVideo(plan));
+    this.remotionRender = deps.remotionRender ?? ((plan, manifest) => renderWithRemotion(plan, manifest));
+    this.visualQa = deps.visualQa ?? false;
     this.review = deps.review ?? revisaoPadrao(deps.run ?? runReal);
     this.images = deps.images;
     this.workDir = deps.workDir;
@@ -384,9 +400,10 @@ export class VideoAgent implements JobWorker {
       if (await this.parar(run)) return;
 
       // A ordem para o Joel é roteiro -> conferir imagens -> (se faltar) folha de prompts
-      // -> narração. Sem todas as imagens, a espera do Flow vem primeiro: o agente grava a
-      // folha e NÃO tenta narrar, para o Joel saber logo o que gerar no navegador.
-      if (imagens.faltando.length > 0) {
+      // -> narração. Templates programáticos (stickman-2d, motion-graphics, ad-creative)
+      // não travam esperando Flow; só os que exigem imagens param aqui.
+      const exigeImagens = templateRequiresImages(manifest.templateVisual);
+      if (exigeImagens && imagens.faltando.length > 0) {
         const cenas = imagens.faltando.join(', ');
         // Folha com os prompts para o Joel gerar no navegador; sem provider de pasta, nada muda.
         const pasta = await this.folhaDePrompt(request.jobId, manifest);
@@ -637,7 +654,7 @@ export class VideoAgent implements JobWorker {
         cenas.push({ ...cena, assetRef: existente.name });
         continue;
       }
-      const caminho = await this.images.find(jobId, cena);
+      const caminho = await this.images.find(jobId, cena, manifest);
       if (caminho === null || caminho.trim() === '') {
         faltando.push(cena.n);
         cenas.push({ ...cena });
@@ -647,7 +664,7 @@ export class VideoAgent implements JobWorker {
       const nome = `imagem-cena-${cena.n}${sufixo}`;
       const item = await this.store.addFile(jobId, caminho, {
         name: nome,
-        origin: this.images.origin ?? 'flow',
+        origin: this.images.originFor?.(jobId, cena) ?? this.images.origin ?? 'flow',
         kind: 'image',
       });
       cenas.push({ ...cena, assetRef: item.name });
@@ -668,10 +685,11 @@ export class VideoAgent implements JobWorker {
 
     // O plano é barato e puro; montamos antes para ter a duração real mesmo quando o
     // render é reaproveitado (a revisão precisa dela).
-    const assets = this.assetsDoStore(jobId, manifest, narracao);
+    const allowMissingImages = !templateRequiresImages(manifest.templateVisual);
+    const assets = this.assetsDoStore(jobId, manifest, narracao, allowMissingImages);
     const sub = createHash('sha256').update(jobId).digest('hex').slice(0, 12);
     const outDir = join(this.workDir, sub);
-    const plan = planRender(manifest, assets, { outDir, preview });
+    const plan = planRender(manifest, assets, { outDir, preview, allowMissingImages });
 
     const videoExistente = await this.itemIntacto(jobId, nomeVideo);
     const legendaExistente = await this.itemIntacto(jobId, nomeLegenda);
@@ -681,16 +699,21 @@ export class VideoAgent implements JobWorker {
     }
 
     await mkdir(outDir, { recursive: true });
-    const resultado = await this.render(plan);
+    const usarRemotion =
+      manifest.motorVisual === 'remotion' ||
+      (manifest.templateVisual !== undefined && manifest.motorVisual !== 'ffmpeg');
+    const resultado = usarRemotion
+      ? await this.remotionRender(plan, manifest)
+      : await this.render(plan);
 
     const video = await this.store.addFile(jobId, resultado.outPath, {
       name: basename(plan.outPath),
-      origin: 'ffmpeg',
+      origin: usarRemotion ? 'remotion' : 'ffmpeg',
       kind: 'video',
     });
     const legenda = await this.store.addFile(jobId, plan.subtitlesPath, {
       name: basename(plan.subtitlesPath),
-      origin: 'ffmpeg',
+      origin: usarRemotion ? 'remotion' : 'ffmpeg',
       kind: 'legenda',
     });
     return { video, legenda, reused: false, plan };
@@ -717,10 +740,20 @@ export class VideoAgent implements JobWorker {
     const arquivo = join(this.store.root, jobId, previa.video.name);
     // A revisão precisa saber que é prévia (metade da resolução) e a duração real do plano.
     const expectedDurationSec = previa.plan.scenes.reduce((soma, cena) => soma + cena.durationSec, 0);
+    const sub = createHash('sha256').update(jobId).digest('hex').slice(0, 12);
+    const framesDir = this.visualQa ? join(this.workDir, sub, 'qa-frames') : undefined;
     const revisao = await this.review(arquivo, manifest, {
       preview: previa.plan.preview,
       expectedDurationSec,
+      ...(this.visualQa ? { checkBlackFrames: true, extractFramesDir: framesDir } : {}),
     });
+    for (const framePath of revisao.qaFrames ?? []) {
+      await this.store.addFile(jobId, framePath, {
+        name: basename(framePath),
+        origin: 'revisor',
+        kind: 'qa-frame',
+      });
+    }
     await this.store.add(jobId, {
       name: REVISAO_PREVIA,
       data: `${JSON.stringify(revisao, null, 2)}\n`,
@@ -791,6 +824,7 @@ export class VideoAgent implements JobWorker {
     jobId: string,
     manifest: VideoManifest,
     narracao: NarrateAllResult,
+    allowMissingImages = false,
   ): RenderAssets {
     const imagens = new Map<number, string>();
     for (const cena of manifest.cenas) {
@@ -802,7 +836,10 @@ export class VideoAgent implements JobWorker {
     return {
       imagePathFor: (n) => {
         const caminho = imagens.get(n);
-        if (caminho === undefined) throw new Error(`cena ${n} sem imagem importada`);
+        if (caminho === undefined) {
+          if (allowMissingImages) return '';
+          throw new Error(`cena ${n} sem imagem importada`);
+        }
         return caminho;
       },
       audioFor: (n) => {

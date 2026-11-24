@@ -12,6 +12,18 @@
 
 import { createHash } from 'node:crypto';
 import { validateBrief, type IdiomaVideo, type VideoBrief } from './brief.ts';
+import {
+  FONT_MOODS,
+  SCENE_TRANSITIONS,
+  VISUAL_ENGINES,
+  getVideoTemplate,
+  templateRequiresImages,
+  type FontMood,
+  type SceneTransition,
+  type StylePalette,
+  type StyleRecipe,
+  type VisualEngine,
+} from './templates.ts';
 
 export const MANIFEST_VERSION = 'cenas/1';
 
@@ -48,6 +60,14 @@ export interface Scene {
   realistaGeradaPorIA: boolean;
   /** null até a imagem ser gerada/anexada. */
   assetRef: string | null;
+  /** Campos visuais opcionais para templates do estúdio Remotion. */
+  textoNaTela?: string;
+  acao?: string;
+  transicao?: SceneTransition;
+  assets?: string[];
+  pose?: string;
+  expressao?: string;
+  cenario?: string;
 }
 
 export interface VideoManifest {
@@ -57,6 +77,11 @@ export interface VideoManifest {
   titulo: string;
   fontes: Source[];
   cenas: Scene[];
+  /** Seleção opcional de motor e template visual do estúdio. */
+  motorVisual?: VisualEngine;
+  templateVisual?: string;
+  styleRecipe?: StyleRecipe;
+  trilhaAudio?: string | null;
 }
 
 export interface ManifestProblem {
@@ -68,6 +93,72 @@ const PAPEIS: readonly PapelImagem[] = ['ilustracao', 'registro_real'];
 const DATA_ISO = /^\d{4}-\d{2}-\d{2}(T.*)?$/;
 const TOLERANCIA_DURACAO = 0.25;
 const MIN_REPETICAO_IMAGEM = 3;
+const STYLE_RECIPE_KEYS = new Set(['palette', 'cutsPerMinute', 'hookMaxSec', 'fontMood', 'sourceNote']);
+const PALETTE_KEYS = new Set(['background', 'primary', 'accent', 'text']);
+
+function validateStyleRecipe(
+  raw: unknown,
+  erro: (campo: string, problema: string) => void,
+): StyleRecipe | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainObject(raw)) {
+    erro('styleRecipe', 'deve ser um objeto');
+    return undefined;
+  }
+  for (const chave of Object.keys(raw)) {
+    if (!STYLE_RECIPE_KEYS.has(chave)) erro(`styleRecipe.${chave}`, 'campo desconhecido');
+  }
+  const out: StyleRecipe = {};
+  if (raw.palette !== undefined) {
+    if (!isPlainObject(raw.palette)) {
+      erro('styleRecipe.palette', 'deve ser um objeto');
+    } else {
+      const palette: Partial<StylePalette> = {};
+      for (const chave of Object.keys(raw.palette)) {
+        if (!PALETTE_KEYS.has(chave)) {
+          erro(`styleRecipe.palette.${chave}`, 'campo desconhecido');
+          continue;
+        }
+        const val = raw.palette[chave];
+        if (typeof val !== 'string' || val.trim() === '') {
+          erro(`styleRecipe.palette.${chave}`, 'deve ser texto não vazio');
+        } else {
+          palette[chave as keyof StylePalette] = val;
+        }
+      }
+      out.palette = palette;
+    }
+  }
+  if (raw.cutsPerMinute !== undefined) {
+    if (typeof raw.cutsPerMinute !== 'number' || !Number.isFinite(raw.cutsPerMinute) || raw.cutsPerMinute <= 0) {
+      erro('styleRecipe.cutsPerMinute', 'deve ser número maior que zero');
+    } else {
+      out.cutsPerMinute = raw.cutsPerMinute;
+    }
+  }
+  if (raw.hookMaxSec !== undefined) {
+    if (typeof raw.hookMaxSec !== 'number' || !Number.isFinite(raw.hookMaxSec) || raw.hookMaxSec <= 0) {
+      erro('styleRecipe.hookMaxSec', 'deve ser número maior que zero');
+    } else {
+      out.hookMaxSec = raw.hookMaxSec;
+    }
+  }
+  if (raw.fontMood !== undefined) {
+    if (typeof raw.fontMood !== 'string' || !(FONT_MOODS as readonly string[]).includes(raw.fontMood)) {
+      erro('styleRecipe.fontMood', `esperava um de: ${FONT_MOODS.join(', ')}`);
+    } else {
+      out.fontMood = raw.fontMood as FontMood;
+    }
+  }
+  if (raw.sourceNote !== undefined) {
+    if (typeof raw.sourceNote !== 'string') {
+      erro('styleRecipe.sourceNote', 'deve ser texto');
+    } else {
+      out.sourceNote = raw.sourceNote;
+    }
+  }
+  return out;
+}
 
 /** Objeto simples: sem array, sem null e sem classe — só o que vem do JSON. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -255,6 +346,48 @@ export function validateManifest(
         erro(`${campo}.assetRef`, 'deve ser texto ou null'); okCena = false;
       }
 
+      const textoNaTela = item.textoNaTela;
+      if (textoNaTela !== undefined && typeof textoNaTela !== 'string') {
+        erro(`${campo}.textoNaTela`, 'deve ser texto'); okCena = false;
+      }
+
+      const acao = item.acao;
+      if (acao !== undefined && typeof acao !== 'string') {
+        erro(`${campo}.acao`, 'deve ser texto'); okCena = false;
+      }
+
+      const transicao = item.transicao;
+      if (
+        transicao !== undefined &&
+        (typeof transicao !== 'string' || !(SCENE_TRANSITIONS as readonly string[]).includes(transicao))
+      ) {
+        erro(`${campo}.transicao`, `esperava um de: ${SCENE_TRANSITIONS.join(', ')}`); okCena = false;
+      }
+
+      let assets: string[] | undefined;
+      if (item.assets !== undefined) {
+        if (!Array.isArray(item.assets) || item.assets.some((a) => typeof a !== 'string')) {
+          erro(`${campo}.assets`, 'deve ser uma lista de textos'); okCena = false;
+        } else {
+          assets = [...(item.assets as string[])];
+        }
+      }
+
+      const pose = item.pose;
+      if (pose !== undefined && typeof pose !== 'string') {
+        erro(`${campo}.pose`, 'deve ser texto'); okCena = false;
+      }
+
+      const expressao = item.expressao;
+      if (expressao !== undefined && typeof expressao !== 'string') {
+        erro(`${campo}.expressao`, 'deve ser texto'); okCena = false;
+      }
+
+      const cenario = item.cenario;
+      if (cenario !== undefined && typeof cenario !== 'string') {
+        erro(`${campo}.cenario`, 'deve ser texto'); okCena = false;
+      }
+
       if (okCena) {
         cenas.push({
           n: n as number,
@@ -266,10 +399,46 @@ export function validateManifest(
           papelImagem: papelImagem as PapelImagem,
           realistaGeradaPorIA: realista as boolean,
           assetRef: assetRef === null || assetRef === undefined ? null : (assetRef as string),
+          ...(textoNaTela !== undefined ? { textoNaTela: textoNaTela as string } : {}),
+          ...(acao !== undefined ? { acao: acao as string } : {}),
+          ...(transicao !== undefined ? { transicao: transicao as SceneTransition } : {}),
+          ...(assets !== undefined ? { assets } : {}),
+          ...(pose !== undefined ? { pose: pose as string } : {}),
+          ...(expressao !== undefined ? { expressao: expressao as string } : {}),
+          ...(cenario !== undefined ? { cenario: cenario as string } : {}),
         });
         totalSeg += duracao as number;
       }
     });
+  }
+
+  let motorVisual: VisualEngine | undefined;
+  if (raw.motorVisual !== undefined) {
+    if (typeof raw.motorVisual !== 'string' || !(VISUAL_ENGINES as readonly string[]).includes(raw.motorVisual)) {
+      erro('motorVisual', `esperava um de: ${VISUAL_ENGINES.join(', ')}`);
+    } else {
+      motorVisual = raw.motorVisual as VisualEngine;
+    }
+  }
+
+  let templateVisual: string | undefined;
+  if (raw.templateVisual !== undefined) {
+    if (typeof raw.templateVisual !== 'string' || getVideoTemplate(raw.templateVisual) === null) {
+      erro('templateVisual', 'template visual desconhecido');
+    } else {
+      templateVisual = raw.templateVisual.trim();
+    }
+  }
+
+  const styleRecipe = validateStyleRecipe(raw.styleRecipe, erro);
+
+  let trilhaAudio: string | null | undefined;
+  if (raw.trilhaAudio !== undefined) {
+    if (raw.trilhaAudio !== null && typeof raw.trilhaAudio !== 'string') {
+      erro('trilhaAudio', 'deve ser texto ou null');
+    } else {
+      trilhaAudio = raw.trilhaAudio;
+    }
   }
 
   // Só compara com o briefing quando ele é válido e todas as cenas têm duração.
@@ -296,6 +465,10 @@ export function validateManifest(
     titulo: titulo as string,
     fontes,
     cenas,
+    ...(motorVisual !== undefined ? { motorVisual } : {}),
+    ...(templateVisual !== undefined ? { templateVisual } : {}),
+    ...(styleRecipe !== undefined ? { styleRecipe } : {}),
+    ...(trilhaAudio !== undefined ? { trilhaAudio } : {}),
   };
 
   // Avisos: não bloqueiam a montagem, mas ficam visíveis para o Joel.
@@ -333,6 +506,7 @@ export function validateManifest(
  */
 export function readyForFinalRender(manifest: VideoManifest): { pronto: boolean; pendencias: string[] } {
   const pendencias: string[] = [];
+  const exigeImagens = templateRequiresImages(manifest.templateVisual);
   for (const cena of manifest.cenas) {
     for (const a of cena.afirmacoes) {
       if ((a.fonte === null || a.fonte.trim() === '') && !a.duvida) {
@@ -342,7 +516,7 @@ export function readyForFinalRender(manifest: VideoManifest): { pronto: boolean;
     if (cena.papelImagem === 'registro_real' && cena.promptImagem.trim() !== '') {
       pendencias.push(`cena ${cena.n}: "registro_real" gerado por prompt; use registro autêntico ou mude para ilustração`);
     }
-    if (cena.assetRef === null || cena.assetRef.trim() === '') {
+    if (exigeImagens && (cena.assetRef === null || cena.assetRef.trim() === '')) {
       pendencias.push(`cena ${cena.n}: sem imagem anexada (assetRef vazio)`);
     }
   }
@@ -359,9 +533,36 @@ export function estimateDuration(texto: string, idioma: IdiomaVideo): number {
 
 /**
  * Chave de cache por cena (base do V07): muda quando muda a narração, o prompt, o estilo,
- * o idioma ou o formato; as outras cenas mantêm a chave e não são regeradas.
+ * o idioma, o formato ou a direção visual; as outras cenas mantêm a chave e não são regeradas.
  */
 export function sceneCacheKey(scene: Scene, brief: VideoBrief): string {
-  const material = JSON.stringify([scene.narracao, scene.promptImagem, brief.estilo, brief.idioma, brief.formato]);
+  const temExtraVisual =
+    scene.textoNaTela !== undefined ||
+    scene.acao !== undefined ||
+    scene.transicao !== undefined ||
+    scene.pose !== undefined ||
+    scene.expressao !== undefined ||
+    scene.cenario !== undefined ||
+    scene.assets !== undefined;
+  const material = JSON.stringify(
+    temExtraVisual
+      ? [
+          scene.narracao,
+          scene.promptImagem,
+          brief.estilo,
+          brief.idioma,
+          brief.formato,
+          {
+            ...(scene.textoNaTela !== undefined ? { textoNaTela: scene.textoNaTela } : {}),
+            ...(scene.acao !== undefined ? { acao: scene.acao } : {}),
+            ...(scene.transicao !== undefined ? { transicao: scene.transicao } : {}),
+            ...(scene.pose !== undefined ? { pose: scene.pose } : {}),
+            ...(scene.expressao !== undefined ? { expressao: scene.expressao } : {}),
+            ...(scene.cenario !== undefined ? { cenario: scene.cenario } : {}),
+            ...(scene.assets !== undefined ? { assets: scene.assets } : {}),
+          },
+        ]
+      : [scene.narracao, scene.promptImagem, brief.estilo, brief.idioma, brief.formato],
+  );
   return createHash('sha256').update(material).digest('hex');
 }

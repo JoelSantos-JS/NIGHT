@@ -51,6 +51,8 @@ export interface RenderAssets {
 export interface PlanRenderOptions {
   outDir: string;
   preview?: boolean;
+  /** Templates programáticos do Remotion podem renderizar sem imagem importada por cena. */
+  allowMissingImages?: boolean;
 }
 
 export interface RenderResult {
@@ -74,15 +76,17 @@ const RESOLUCOES: Record<FormatoVideo, { width: number; height: number }> = {
 };
 
 /** Pega o caminho da imagem; cena sem imagem não vira tela preta por acidente. */
-function imagePathDe(cena: Scene, assets: RenderAssets): string {
+function imagePathDe(cena: Scene, assets: RenderAssets, allowMissingImages = false): string {
   let imagePath: string;
   try {
     imagePath = assets.imagePathFor(cena.n);
   } catch (error) {
+    if (allowMissingImages) return '';
     const motivo = error instanceof Error ? error.message : String(error);
     throw new Error(`cena ${cena.n}: sem imagem para o render: ${motivo}`);
   }
   if (typeof imagePath !== 'string' || imagePath.trim() === '') {
+    if (allowMissingImages) return '';
     throw new Error(`cena ${cena.n}: sem imagem para o render (o render não inventa imagem)`);
   }
   return imagePath;
@@ -98,6 +102,7 @@ export function planRender(
   opts: PlanRenderOptions,
 ): RenderPlan {
   const preview = opts.preview ?? false;
+  const allowMissingImages = opts.allowMissingImages ?? false;
   const base = RESOLUCOES[manifest.brief.formato];
   const width = preview ? Math.round(base.width / 2) : base.width;
   const height = preview ? Math.round(base.height / 2) : base.height;
@@ -114,7 +119,7 @@ export function planRender(
     }
     return {
       n: cena.n,
-      imagePath: imagePathDe(cena, assets),
+      imagePath: imagePathDe(cena, assets, allowMissingImages),
       audioPath: audio?.path ?? null,
       durationSec,
       caption: cena.narracao,
@@ -255,6 +260,9 @@ export function buildFfmpegArgs(plan: RenderPlan): string[] {
   // Entradas de imagem: -framerate alinha o loop à taxa da saída (o padrão de 25 fps
   // encurtava o vídeo), -loop 1 segura o quadro e -t define o tempo da cena.
   for (const cena of plan.scenes) {
+    if (cena.imagePath.trim() === '') {
+      throw new Error(`cena ${cena.n}: sem imagem para o render FFmpeg`);
+    }
     args.push('-framerate', String(plan.fps), '-loop', '1', '-t', seg(cena.durationSec), '-i', cena.imagePath);
   }
   // Uma entrada de áudio por cena, depois das imagens: WAV quando existe; silêncio

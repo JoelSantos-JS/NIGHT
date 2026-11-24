@@ -10,6 +10,8 @@
 //   pode exigir na publicação.
 // Silêncio no fim é tolerado de propósito: vídeos costumam fechar com fade ou cauda.
 
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { FormatoVideo } from './brief.ts';
 import { readyForFinalRender, validateManifest, type VideoManifest } from './manifest.ts';
 
@@ -32,10 +34,17 @@ export interface SilenceSpan {
   end: number;
 }
 
+/** Trecho contínuo de tela preta medido pelo filtro blackdetect. */
+export interface BlackSpan {
+  start: number;
+  end: number;
+}
+
 export interface ReviewOptions {
   /** Prévia: aceita a metade da resolução do formato, além da resolução cheia. */
   preview?: boolean;
   silenceSpans?: SilenceSpan[];
+  blackSpans?: BlackSpan[];
   /**
    * Soma das durações do RenderPlan, que vêm do áudio real. Sem ele a comparação usa
    * a estimativa do texto, que pode divergir da voz e só rende aviso.
@@ -48,12 +57,18 @@ export interface RunReviewOptions {
   /** Prévia: aceita a metade da resolução do formato, além da resolução cheia. */
   preview?: boolean;
   expectedDurationSec?: number;
+  /** Quando true, roda blackdetect para acusar quadros pretos no meio do vídeo. */
+  checkBlackFrames?: boolean;
+  /** Quando informada, extrai frames JPEG de amostragem para inspeção visual no painel. */
+  extractFramesDir?: string;
+  qaFrameCount?: number;
 }
 
 export interface ReviewResult {
   ok: boolean;
   falhas: string[];
   avisos: string[];
+  qaFrames?: string[];
 }
 
 export interface ReviewSummary {
@@ -79,6 +94,7 @@ const RESOLUCAO_POR_FORMATO: Record<FormatoVideo, { width: number; height: numbe
 
 const TOLERANCIA_DURACAO = 0.1;
 const MIN_SILENCIO_FALHA_SEG = 3;
+const MIN_PRETO_FALHA_SEG = 0.5;
 /** Folga para considerar um silêncio "no fim" (o ffprobe e o ffmpeg arredondam). */
 const TOLERANCIA_FIM_SEG = 0.5;
 const CODEC_VIDEO = 'h264';
@@ -96,6 +112,11 @@ export function probeArgs(file: string): string[] {
  */
 export function silencedetectArgs(file: string): string[] {
   return ['-hide_banner', '-nostats', '-i', file, '-af', 'silencedetect=noise=-40dB:d=1', '-f', 'null', '-'];
+}
+
+/** Argumentos do ffmpeg para detectar trechos de tela preta inesperados. */
+export function blackdetectArgs(file: string): string[] {
+  return ['-hide_banner', '-nostats', '-i', file, '-vf', 'blackdetect=d=0.5:pix_th=0.10', '-an', '-f', 'null', '-'];
 }
 
 /** Objeto simples: sem array, sem null e sem classe — só o que vem do JSON. */
@@ -254,6 +275,16 @@ export function reviewRender(
     falhas.push(`silêncio de ${segundos(duracao)}s em ${segundos(trecho.start)}s (trecho vazio no meio do vídeo)`);
   }
 
+  for (const trecho of opts.blackSpans ?? []) {
+    const duracao = trecho.end - trecho.start;
+    if (!(duracao >= MIN_PRETO_FALHA_SEG)) continue;
+    // Fade preto curto bem no final do vídeo é aceito; quadro preto no meio bloqueia.
+    const noFim = !Number.isFinite(trecho.end) ||
+      (Number.isFinite(probe.durationSec) && probe.durationSec - trecho.end <= TOLERANCIA_FIM_SEG);
+    if (noFim) continue;
+    falhas.push(`quadro preto de ${segundos(duracao)}s em ${segundos(trecho.start)}s`);
+  }
+
   return { ok: falhas.length === 0, falhas, avisos };
 }
 
@@ -276,6 +307,72 @@ export function parseSilence(stderr: string): SilenceSpan[] {
   }
   if (aberto !== null) spans.push({ start: aberto, end: Number.POSITIVE_INFINITY });
   return spans;
+}
+
+/** Lê black_start/black_end do stderr do ffmpeg (filtro blackdetect). */
+export function parseBlackSpans(stderr: string): BlackSpan[] {
+  const spans: BlackSpan[] = [];
+  for (const linha of stderr.split(/\r?\n/)) {
+    const inicio = /black_start:\s*(-?\d+(?:\.\d+)?)/.exec(linha);
+    const fim = /black_end:\s*(-?\d+(?:\.\d+)?)/.exec(linha);
+    if (inicio && fim) {
+      const start = Math.max(0, Number(inicio[1]));
+      const end = Math.max(start, Number(fim[1]));
+      spans.push({ start, end });
+    }
+  }
+  return spans;
+}
+
+/** Instantes seguros para extração de frames de amostragem de QA. */
+export function qaFrameTimestamps(durationSec: number, count = 4): number[] {
+  if (!Number.isFinite(durationSec) || durationSec <= 0 || count <= 0) return [];
+  const n = Math.max(1, Math.floor(count));
+  if (n === 1 || durationSec <= 1) {
+    return [Math.round(Math.min(0.5, durationSec * 0.5) * 100) / 100];
+  }
+  const inicio = Math.min(0.5, durationSec * 0.1);
+  const fim = Math.max(inicio, durationSec - Math.min(0.5, durationSec * 0.1));
+  const pontos = new Set<number>();
+  for (let i = 0; i < n; i++) {
+    const t = inicio + ((fim - inicio) * i) / (n - 1);
+    pontos.add(Math.round(t * 100) / 100);
+  }
+  return [...pontos].sort((a, b) => a - b);
+}
+
+/** Extrai frames JPEG de amostragem do vídeo renderizado para inspeção visual. */
+export async function extractQaFrames(
+  file: string,
+  durationSec: number,
+  outDir: string,
+  run: RunCommand,
+  count = 4,
+): Promise<string[]> {
+  const instantes = qaFrameTimestamps(durationSec, count);
+  if (instantes.length === 0) return [];
+  await mkdir(outDir, { recursive: true });
+  const salvos: string[] = [];
+  for (let i = 0; i < instantes.length; i++) {
+    const destino = join(outDir, `qa-frame-${i + 1}.jpg`);
+    const res = await run('ffmpeg', [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-ss',
+      instantes[i]!.toFixed(2),
+      '-i',
+      file,
+      '-frames:v',
+      '1',
+      '-q:v',
+      '3',
+      destino,
+    ]);
+    if (res.code === 0) salvos.push(destino);
+  }
+  return salvos;
 }
 
 /**
@@ -318,12 +415,28 @@ export async function runReview(
     else avisoSilencio = `não foi possível medir silêncios (ffmpeg código ${saidaSilencio.code})`;
   }
 
+  let blackSpans: BlackSpan[] = [];
+  let avisoPreto: string | null = null;
+  if (opts.checkBlackFrames && probe.hasVideo) {
+    const saidaPreto = await run('ffmpeg', blackdetectArgs(file));
+    if (saidaPreto.code === 0) blackSpans = parseBlackSpans(saidaPreto.stderr);
+    else avisoPreto = `não foi possível detectar quadros pretos (ffmpeg código ${saidaPreto.code})`;
+  }
+
+  let qaFrames: string[] | undefined;
+  if (opts.extractFramesDir !== undefined && probe.hasVideo && Number.isFinite(probe.durationSec) && probe.durationSec > 0) {
+    qaFrames = await extractQaFrames(file, probe.durationSec, opts.extractFramesDir, run, opts.qaFrameCount);
+  }
+
   const resultado = reviewRender(probe, manifest, {
     silenceSpans,
+    ...(opts.checkBlackFrames ? { blackSpans } : {}),
     ...(opts.preview !== undefined ? { preview: opts.preview } : {}),
     ...(opts.expectedDurationSec !== undefined ? { expectedDurationSec: opts.expectedDurationSec } : {}),
   });
-  if (avisoSilencio !== null) resultado.avisos = semRepetir([...resultado.avisos, avisoSilencio]);
+  const extras = [avisoSilencio, avisoPreto].filter((item): item is string => item !== null);
+  if (extras.length > 0) resultado.avisos = semRepetir([...resultado.avisos, ...extras]);
+  if (qaFrames !== undefined) resultado.qaFrames = qaFrames;
   return resultado;
 }
 

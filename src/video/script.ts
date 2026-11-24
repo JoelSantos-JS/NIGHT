@@ -20,6 +20,7 @@ import {
   type ManifestProblem,
   type VideoManifest,
 } from './manifest.ts';
+import { resolveTemplateForStyle } from './templates.ts';
 
 export interface ScriptMessage {
   role: 'system' | 'user';
@@ -94,6 +95,24 @@ function hojeIso(): string {
  * O briefing vem do NIGHT (dado do pedido); o modelo não escolhe tema nem plataforma.
  */
 export function buildScriptPrompt(input: GenerateManifestInput): ScriptMessage[] {
+  const template = resolveTemplateForStyle(input.brief.estilo);
+  const templateSystem = template === null
+    ? []
+    : [
+        `Template visual selecionado (${template.id}):`,
+        `- Inclua "motorVisual": "${template.motorPadrao}" e "templateVisual": "${template.id}" no manifesto.`,
+        '- Em cada cena, preencha os campos visuais opcionais quando aplicável: "textoNaTela" (manchete curta na tela), "acao" (movimento/ação visual), "transicao" ("cut" | "fade" | "slide" | "zoom"), "assets" (lista de elementos de cena).',
+        ...(template.id === 'stickman-2d'
+          ? ['- Em cada cena stickman-2d, inclua "pose" e "expressao".']
+          : []),
+        '- A cena 1 deve abrir com gancho forte nos primeiros 3 segundos.',
+        ...template.dicasDeRoteiro.map((dica) => `- ${dica}`),
+      ];
+
+  const promptImagemRegra = template?.imagens === 'none'
+    ? '- promptImagem em inglês (pode ser "" neste template programático, pois a cena é desenhada em código).'
+    : '- promptImagem em inglês, descritivo, com o mesmo estilo visual e a mesma paleta em todas as cenas.';
+
   const system = [
     'Você escreve o roteiro original de um vídeo para o NIGHT e entrega o manifesto de cenas.',
     'Responda em português do Brasil e envie SOMENTE um objeto JSON, sem markdown, no formato:',
@@ -105,10 +124,11 @@ export function buildScriptPrompt(input: GenerateManifestInput): ScriptMessage[]
     `- ${orientacaoDeDuracao(input.brief)}`,
     '- Toda afirmação factual precisa de uma fonte real (URL http/https que você conheça, listada em fontes) ou duvida: true. Não invente URL.',
     '- Use papelImagem "ilustracao" em todas as cenas: imagem gerada por IA nunca é registro real.',
-    '- promptImagem em inglês, descritivo, com o mesmo estilo visual e a mesma paleta em todas as cenas.',
-    '- assetRef sempre null: a imagem é gerada no Flow depois.',
+    promptImagemRegra,
+    `- assetRef sempre null: ${template?.imagens === 'none' ? 'o template renderiza a cena sem imagem importada.' : 'a imagem é gerada no Flow depois.'}`,
     '- Não prometa renda, lucro, faturamento, garantia nem "fique rico".',
     '- Cenas em sequência, n de 1 a N sem buraco; se uma cena não tiver afirmação factual, envie afirmacoes como lista vazia.',
+    ...templateSystem,
   ].join('\n');
 
   const linhas: string[] = [
@@ -116,6 +136,7 @@ export function buildScriptPrompt(input: GenerateManifestInput): ScriptMessage[]
     'briefing (o NIGHT mantém este briefing; use o tema, o idioma, o estilo e a duração):',
     JSON.stringify(input.brief, null, 2),
     `duração alvo: ${input.brief.duracaoAlvoSeg} s; idioma: ${input.brief.idioma}; formato: ${input.brief.formato}.`,
+    ...(template !== null ? [`template visual: ${template.id} (${template.nome}); motor: ${template.motorPadrao}.`] : []),
     `data de acesso para as fontes (acessadoEm): ${hojeIso()}.`,
   ];
 

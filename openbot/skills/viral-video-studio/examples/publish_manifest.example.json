@@ -1,0 +1,14 @@
+{
+  "job_id":"demo-gravidade-001",
+  "asset_path":"jobs/demo-gravidade-001/final.mp4",
+  "asset_sha256":"populate-after-render",
+  "status":"draft",
+  "approval_mode":"review_before_publish",
+  "publication_enabled":false,
+  "destinations":[
+    {"platform":"instagram_reels","account_id":null,"title":"E se a gravidade sumisse?","status":"NOT_AUTHORIZED"},
+    {"platform":"facebook_reels","account_id":null,"title":"E se a gravidade sumisse?","status":"NOT_AUTHORIZED"},
+    {"platform":"tiktok","account_id":null,"title":"E se a gravidade sumisse?","status":"NOT_AUTHORIZED"},
+    {"platform":"youtube_shorts","account_id":null,"title":"E se a gravidade sumisse?","status":"NOT_AUTHORIZED"}
+  ]
+}

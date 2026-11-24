@@ -1,0 +1,10 @@
+{
+ "job_id":"demo-gravidade-001","title":"E se a gravidade sumisse?","language":"pt-BR","style":"stickman-2d","duration_seconds":45,"fps":30,"width":1080,"height":1920,
+ "scenes":[
+  {"id":"s01","start_seconds":0,"end_seconds":5,"visual":"Stickman original em fundo claro, objeto flutuando","action":"Personagem levanta o olhar, bola começa a subir","voiceover":"E se a gravidade sumisse por dez segundos?","onscreen_text":"10 SEGUNDOS SEM GRAVIDADE","assets":["stickman-main","ball"],"transition":"cut"},
+  {"id":"s02","start_seconds":5,"end_seconds":14,"visual":"Sala estilizada e objetos soltos","action":"Objetos e personagem perdem contato com o chão","voiceover":"Tudo que estivesse solto começaria a flutuar em relação ao ambiente. Mas a história é mais complicada.","onscreen_text":"TUDO FLUTUARIA?","assets":["room","stickman-main"],"transition":"cut"},
+  {"id":"s03","start_seconds":14,"end_seconds":26,"visual":"Cenário esquemático da Terra","action":"Personagem observa objetos e partículas","voiceover":"Sem uma força gravitacional mantendo as coisas no lugar, movimentos já existentes continuariam. É uma hipótese imaginária, não uma previsão física completa.","onscreen_text":"UMA HIPÓTESE IMPOSSÍVEL","assets":["earth-diagram"],"transition":"cut"},
+  {"id":"s04","start_seconds":26,"end_seconds":38,"visual":"Relógio grande, contagem regressiva","action":"Contagem de dez a zero e objetos em movimento","voiceover":"Quando a gravidade voltasse, os objetos suspensos poderiam cair e provocar impactos. A altura e a velocidade fariam diferença.","onscreen_text":"QUANDO VOLTASSE...","assets":["clock","stickman-main"],"transition":"cut"},
+  {"id":"s05","start_seconds":38,"end_seconds":45,"visual":"Stickman estabiliza e olha para a câmera","action":"Final com pergunta e pausa para leitura","voiceover":"Você conseguiria se segurar? Qual seria sua primeira reação?","onscreen_text":"E VOCÊ?","assets":["stickman-main"],"transition":"fade"}
+ ]
+}

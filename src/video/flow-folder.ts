@@ -10,6 +10,7 @@ import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { ImageProvider } from './agent.ts';
 import type { Scene, VideoManifest } from './manifest.ts';
+import { buildImagePromptForScene } from './openai-image.ts';
 
 /** Pasta raiz padrão: fora do repositório, no disco de dados do NIGHT. */
 export const FLOW_FOLDER_PADRAO = 'D:/NIGHT-data/flow-import';
@@ -96,7 +97,12 @@ export class FlowFolderProvider implements ImageProvider {
 export async function writePromptSheet(manifest: VideoManifest, dir: string): Promise<string> {
   await mkdir(dir, { recursive: true });
   const numero = basename(dir);
-  const cenas = manifest.cenas.map((cena) => `cena-${cena.n}: ${cena.promptImagem}`);
+  const cenas = manifest.cenas.map((cena) => {
+    const texto = cena.promptImagem.trim() !== ''
+      ? cena.promptImagem
+      : buildImagePromptForScene(cena, manifest);
+    return `cena-${cena.n}: ${texto}`;
+  });
   const conteudo = [
     `# Prompts do Flow — ${manifest.titulo}`,
     '',
