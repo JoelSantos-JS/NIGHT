@@ -76,6 +76,8 @@ export interface ProposalContext {
   candidateIds: Set<string>;
   /** Textos de anúncio/landing: servem só para provar que não houve cópia. */
   textosDosConcorrentes: string[];
+  /** Faixa de preço da versão do Joel, quando o pedido a definiu. */
+  precoAlvo?: { minimo: number; maximo: number };
 }
 
 export interface ProposalError {
@@ -103,6 +105,7 @@ export interface ProposalCandidateInput {
 export interface ProposalPromptInput {
   candidatos: ProposalCandidateInput[];
   nicho: string;
+  precoAlvo?: { minimo: number; maximo: number };
 }
 
 // --- Comparação de texto (sem acento, caixa ou pontuação) ---
@@ -367,6 +370,10 @@ export function validateProposal(raw: unknown, ctx: ProposalContext): ProposalVa
   const entregaveis = lerEntregaveis(raw.entregaveis);
   const bonus = listaTexto('bonus', raw.bonus, 0);
   const precoHipotese = lerPreco(raw.precoHipotese);
+  if (ctx.precoAlvo && precoHipotese.valor > 0
+    && (precoHipotese.valor < ctx.precoAlvo.minimo || precoHipotese.valor > ctx.precoAlvo.maximo)) {
+    erro('precoHipotese.valor', `use R$ ${ctx.precoAlvo.minimo.toFixed(2).replace('.', ',')} a R$ ${ctx.precoAlvo.maximo.toFixed(2).replace('.', ',')} neste pedido`);
+  }
   const paginaDeVendas = listaTexto('paginaDeVendas', raw.paginaDeVendas, 5);
   const angulosCriativo = listaTexto('angulosCriativo', raw.angulosCriativo, 5);
   if (Array.isArray(raw.angulosCriativo) && raw.angulosCriativo.length !== 5) {
@@ -456,6 +463,7 @@ export function buildProposalPrompt(input: ProposalPromptInput): ProposalMessage
     '- Não copie texto nem imagem de concorrente. Descreva o ângulo com as suas palavras e não repita trechos de 8 ou mais palavras do anúncio ou da landing.',
     '- Não prometa renda, lucro, resultado garantido, "fique rico" ou números de faturamento. A promessa precisa ser verificável.',
     '- O preço é hipótese (ehHipotese: true), com justificativa; não é preço aprovado nem prova de venda.',
+    ...(input.precoAlvo ? [`- Preço hipotético da SUA versão: entre R$ ${input.precoAlvo.minimo.toFixed(2).replace('.', ',')} e R$ ${input.precoAlvo.maximo.toFixed(2).replace('.', ',')}. O preço do anúncio de origem é evidência de mercado, não o seu preço.`] : []),
     '- A proposta principal precisa de pelo menos 4 entregáveis em PDF (os 4 PDFs do plano) e no máximo 8 entregáveis.',
     '- Use exatamente 5 ângulos de criativo, pelo menos 3 objeções com resposta, pelo menos 1 evidência citando um candidateId recebido e pelo menos 2 dúvidas.',
     '- Escreva sempre o motivoParaDescartar: por que a ideia pode falhar ou ser abandonada.',

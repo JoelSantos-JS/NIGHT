@@ -6,10 +6,12 @@ export type VisualEngine = 'ffmpeg' | 'remotion';
 export type TemplateImagePolicy = 'required' | 'optional' | 'none';
 export type SceneTransition = 'cut' | 'fade' | 'slide' | 'zoom';
 export type FontMood = 'bold-sans' | 'editorial' | 'handwritten';
+export type CampaignVideoMode = 'inspiracao' | 'overlay-proprio';
 
 export const VISUAL_ENGINES: readonly VisualEngine[] = ['ffmpeg', 'remotion'];
 export const SCENE_TRANSITIONS: readonly SceneTransition[] = ['cut', 'fade', 'slide', 'zoom'];
 export const FONT_MOODS: readonly FontMood[] = ['bold-sans', 'editorial', 'handwritten'];
+export const CAMPAIGN_VIDEO_MODES: readonly CampaignVideoMode[] = ['inspiracao', 'overlay-proprio'];
 
 export interface StylePalette {
   background: string;
@@ -100,7 +102,8 @@ export const VIDEO_TEMPLATES: Readonly<Record<string, VideoTemplateSpec>> = {
   'ad-creative': {
     id: 'ad-creative',
     nome: 'Criativo de Anúncio',
-    descricao: 'Layout de resposta direta para ofertas low-ticket: gancho no topo, prova/benefício, mockup opcional e CTA final.',
+    descricao:
+      'Layout de resposta direta para ofertas low-ticket em dois modos: "inspiracao" (criativo 100% autoral modelado sobre referência do Radar) ou "overlay-proprio" (vídeo-base próprio/licenciado com troca de áudio e overlays).',
     motorPadrao: 'remotion',
     imagens: 'optional',
     formatos: ['vertical', 'horizontal'],
@@ -112,8 +115,9 @@ export const VIDEO_TEMPLATES: Readonly<Record<string, VideoTemplateSpec>> = {
       fontMood: 'bold-sans',
     },
     dicasDeRoteiro: [
-      'Cena 1: gancho direto para a dor ou desejo do público nos primeiros 3 segundos.',
-      'Cenas do meio: demonstre mecanismo e entregável concreto sem prometer ganho garantido.',
+      'Regra de campanha — use modoCampanha "inspiracao" para referências de terceiros/Radar (recriação 100% autoral) ou "overlay-proprio" apenas com vídeo próprio/licenciado (videoBase + videoBaseAutorizado: true + mutarVideoBase: true) trocando o áudio e adicionando overlays.',
+      'Cena 1: gancho direto para a dor ou desejo do público nos primeiros 3 segundos (textoNaTela em caixa de destaque).',
+      'Cenas do meio: demonstre mecanismo e entregável concreto (use assets para selos curtos de benefício) sem prometer ganho garantido.',
       'Última cena: chamada clara para ação em textoNaTela (ex.: "SAIBA MAIS" ou "CONHEÇA O GUIA").',
     ],
   },

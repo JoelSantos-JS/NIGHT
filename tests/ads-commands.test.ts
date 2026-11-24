@@ -55,12 +55,19 @@ describe('regras de low-ticket e campanha', () => {
 
 class FakeWriter implements MetaAdsWriter {
   calls: string[] = [];
+  budgets = new Map<string, number>();
   private n = 0;
   async findCampaignByName() { this.calls.push('find'); return null; }
   async createCampaign() { this.calls.push('campaign'); return { id: `c${++this.n}` }; }
-  async createAdSet(i: { orcamentoDiarioCentavos: number }) { this.calls.push(`adset:${i.orcamentoDiarioCentavos}`); return { id: `s${++this.n}` }; }
+  async createAdSet(i: { orcamentoDiarioCentavos: number }) {
+    this.calls.push(`adset:${i.orcamentoDiarioCentavos}`);
+    const id = `s${++this.n}`;
+    this.budgets.set(id, i.orcamentoDiarioCentavos);
+    return { id };
+  }
   async createAd() { this.calls.push('ad'); return { id: `a${++this.n}` }; }
   async getStatus() { return 'PAUSED'; }
+  async getAdSetDailyBudgetCentavos(id: string) { return this.budgets.get(id) ?? 0; }
 }
 
 /** Leitor falso do M07: devolve números fixos e guarda o id e o período pedidos. */

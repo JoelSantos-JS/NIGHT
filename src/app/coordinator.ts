@@ -27,6 +27,7 @@ import type { OfferLinksStore } from '../lowticket/links.ts';
 import type { OfferProposal } from '../radar/offer.ts';
 import type { ArtifactStore } from '../artifacts/store.ts';
 import { RELATORIO_RADAR, type RelatorioRadar } from '../radar/worker.ts';
+import { DOMINIOS_DESCOBERTA, ehPedidoGenerico, PRECO_ALVO, planejarConsultasBiblioteca } from '../radar/search-terms.ts';
 import { detectLanguage, jobNumberIn, normalize, researchScope, ruleIntent } from '../router/router.ts';
 import { describePlan, detectRunner, findFolders, WindowLauncher, type FolderHit, type Launcher, type RunPlan } from '../tools/projects.ts';
 import {
@@ -52,35 +53,45 @@ export const FOLLOW_UP = /\b(traz|traga|trazer|mostra|mostre|me fala|fala mais|c
 // ao que veio antes: "meus dados estão salvos?" não é continuação (revisão do Codex).
 const QWEN_HISTORY_TURNS = 3;
 /**
- * Pedido genérico de low-ticket ("vasculha ofertas de low ticket"): o Radar varre as frases que esse tipo de oferta
- * usa no anúncio, como no método de referência (docs/research/radar-de-ofertas-franklim-extracao.md, pág. 4), em vez
- * de buscar literalmente "low ticket" na Biblioteca. Nicho concreto ("fone bluetooth") continua sendo a busca.
+ * Pedido genérico de low-ticket ("vasculha ofertas de low ticket"): o Radar varre as tags de produto que esse tipo
+ * de oferta usa no anúncio, como no método de referência (docs/research/radar-de-ofertas-franklim-extracao.md, pág. 4),
+ * em vez de buscar literalmente "low ticket" na Biblioteca. Nicho concreto ("fone bluetooth") continua sendo a busca.
+ *
+ * As frases exatas do PDF ("apenas R$ 47", "de R$ 197 por R$ 67") ficam de fora: no teste real do Codex elas
+ * devolvem zero. O preço de origem é lido do anúncio; o alvo (R$ 9,90–19,90) é da versão do Joel.
  */
 export const PALAVRAS_LOW_TICKET = [
-  'apenas R$ 47', 'apenas R$ 67', 'apenas R$ 97', 'de R$ 197 por R$ 67',
-  'acesso vitalício', 'curso completo passo a passo', 'método comprovado', 'garantia de 7 dias',
+  'atividades para imprimir', 'caderno de atividades', 'apostila pdf', 'planner digital',
+  'ebook receitas', 'material digital', 'atividades pdf', 'estimulação cognitiva',
+  'lectoescritura', 'cuadernillo pdf', 'printable activities', 'workbook pdf',
 ];
-const LOW_TICKET = /\b(low[ -]?ticket|infoprodutos?|produtos? digita(l|is))\b/i;
 /**
  * "valores mais baixos" (Joel, 21/11): o que já vende barato, de R$ 9,90 a R$ 37. Pela rubrica do PDF, origem abaixo
  * de R$ 37 vale 0 no preço: são os concorrentes do preço final, não a oferta cara para baratear.
  */
-// Preço sozinho ("apenas R$ 19,90") traz loja de roupa ("Pague 3 e Leve 6 Blusinhas", teste real 21/11): a frase
-// precisa de uma palavra de produto digital. "ebook R$ 19,90" e "acesso imediato R$ 19,90" trouxeram e-book e PDF.
+// Preço sozinho ("apenas R$ 19,90") traz loja de roupa ("Pague 3 e Leve 6 Blusinhas", teste real 21/11): a busca
+// precisa de uma tag de produto digital. O valor exato não entra na consulta; ele é conferido depois, no anúncio.
 export const PALAVRAS_PRECO_BAIXO = [
-  'ebook R$ 19,90', 'acesso imediato R$ 19,90', 'ebook R$ 9,90', 'acesso imediato R$ 9,90',
-  'ebook R$ 27', 'acesso imediato R$ 27',
+  'ebook', 'acesso imediato', 'planner digital', 'atividades para imprimir',
+  'apostila pdf', 'material digital', 'printable activities', 'workbook pdf',
 ];
 const PRECO_BAIXO = /\b(barat[oa]s?|mais baix[oa]s?|valor(es)? (mais )?baix[oa]s?|pre[cç]os? (mais )?baix[oa]s?|menor(es)? (valor|pre[cç])|r\$ ?(9|19|27)\b)/i;
 
+/** Quantas consultas por execução (NIGHT_RADAR_BUSCAS, padrão 3). */
+export function buscasDaRodada(): number {
+  const n = Number(process.env.NIGHT_RADAR_BUSCAS ?? 3);
+  return Number.isInteger(n) && n > 0 ? n : 3;
+}
+
 /**
- * Frases de preço desta rodada. Cada frase é uma sessão do Claude (~3 min, teste real 21/11), então vão poucas por
- * vez (NIGHT_RADAR_BUSCAS, padrão 3), girando um passo por dia para cobrir a lista inteira em poucos dias.
- * Antes o Codex trocava as frases por nichos ("planner de rotina") e a busca por nicho trazia qualquer página que
- * anuncia, sem preço: oferta "nada a ver com low-ticket" (Joel, 21/11).
+ * Consultas desta rodada. Cada consulta é uma sessão (~3 min no teste real 21/11), então vão poucas por vez
+ * (NIGHT_RADAR_BUSCAS, padrão 3), girando um passo por dia para cobrir a lista inteira em poucos dias.
+ * Domínio + tag descobre produtos; preço observado fica como dado da oferta.
+ * Preço encontrado não filtra nem ordena candidatos. `vercel.app` sozinho traz ~26 mil
+ * anúncios de gente diferente, enquanto `vercel.app atividades pdf` traz ~250.
  */
 export function palavrasDaRodada(
-  agora = new Date(), quantas = Number(process.env.NIGHT_RADAR_BUSCAS ?? 3), lista: readonly string[] = PALAVRAS_LOW_TICKET,
+  agora = new Date(), quantas = buscasDaRodada(), lista: readonly string[] = PALAVRAS_LOW_TICKET,
 ): string[] {
   const n = Number.isInteger(quantas) && quantas > 0 ? Math.min(quantas, lista.length) : Math.min(3, lista.length);
   const dia = Math.floor(agora.getTime() / 86_400_000);
@@ -88,11 +99,34 @@ export function palavrasDaRodada(
   return Array.from({ length: n }, (_, i) => lista[(inicio + i) % lista.length]!);
 }
 
-/** Frases do Radar: preço baixo se o pedido falar em barato/valor baixo; senão as caras do PDF. */
+/** Cada tag da rodada vira uma consulta `domínio tag`; o domínio gira por dia para cobrir os 13 hosts. */
+export function consultasComDominioDaRodada(
+  agora = new Date(), quantas = buscasDaRodada(), lista: readonly string[] = PALAVRAS_LOW_TICKET,
+): string[] {
+  const n = Number.isInteger(quantas) && quantas > 0 ? quantas : 3;
+  const tags = palavrasDaRodada(agora, n, lista);
+  const dia = Math.floor(agora.getTime() / 86_400_000);
+  return tags.map((tag, i) => `${DOMINIOS_DESCOBERTA[(dia + i) % DOMINIOS_DESCOBERTA.length]!} ${tag}`);
+}
+
+/** Consultas do Radar: preço baixo se o pedido falar em barato/valor baixo; senão as tags de low-ticket. */
 export function palavrasDoPedido(texto: string, agora = new Date()): string[] {
   return PRECO_BAIXO.test(texto)
-    ? palavrasDaRodada(agora, undefined, PALAVRAS_PRECO_BAIXO)
-    : palavrasDaRodada(agora);
+    ? consultasComDominioDaRodada(agora, undefined, PALAVRAS_PRECO_BAIXO)
+    : consultasComDominioDaRodada(agora, undefined, PALAVRAS_LOW_TICKET);
+}
+
+/**
+ * Palavras-chave do trabalho de Radar.
+ * - Pedido genérico (low-ticket, preço baixo): tags do catálogo combinadas com domínio, sem frase exata de preço.
+ * - Nicho explícito ("fone bluetooth"): o termo do Joel vem primeiro e é preservado; as consultas seguintes
+ *   combinam o nicho com hosts de descoberta.
+ */
+export function keywordsDoRadar(texto: string, query: string, agora = new Date()): string[] {
+  if (ehPedidoGenerico(query)) {
+    return palavrasDoPedido(texto, agora);
+  }
+  return planejarConsultasBiblioteca(query, buscasDaRodada()).map((consulta) => consulta.termo);
 }
 
 const SYSTEM_PROMPT: Record<Language, string> = {
@@ -456,8 +490,17 @@ export class NightCoordinator {
       case 'coding-task': out = await this.codingTask(intent, language); break;
       case 'cancel': out = await this.cancel(intent, language); break;
       case 'approval': out = await this.approval(intent, language); break;
-      case 'radar-search': out = await this.createWork('radar', text, LOW_TICKET.test(intent.query) || PRECO_BAIXO.test(text)
-        ? { query: intent.query, keywords: palavrasDoPedido(text) } : { query: intent.query }, language); break;
+      case 'radar-search': {
+        const generico = ehPedidoGenerico(intent.query);
+        const keywords = keywordsDoRadar(text, intent.query);
+        // O preço alvo é da VERSÃO do Joel (R$ 9,90–19,90); a busca é pela oferta de origem mais cara.
+        out = await this.createWork('radar', text,
+          generico || PRECO_BAIXO.test(text)
+            ? { query: intent.query, keywords, precoAlvo: PRECO_ALVO }
+            : { query: intent.query, keywords },
+          language);
+        break;
+      }
       case 'video-create': out = await this.createWork('video', text, { topic: intent.topic }, language); break;
       case 'job-status': ({ text: out, detail } = await this.jobStatus(intent, language)); break;
       case 'job-cancel': out = await this.cancelJob(intent, language); break;
@@ -1037,41 +1080,82 @@ export class NightCoordinator {
     }
   }
 
-  private async radarResult(job: Job, language: Language): Promise<string> {
+  private async radarResult(job: Job, language: Language): Promise<{ text: string; detail?: string }> {
     const report = await this.radarReport(job.id);
     const label = `Radar ${job.number}`;
     const painel = say(language, 'Veja no painel, seção Radar.', 'See the Radar section in the panel.');
-    if (!report) return say(language,
+    if (!report) return { text: say(language,
       `${label} terminou, mas não consegui ler o relatório. ${painel}`,
-      `${label} finished, but I could not read its report. ${painel}`);
+      `${label} finished, but I could not read its report. ${painel}`) };
     const offers = report.ofertas.filter((offer) =>
       typeof offer?.number === 'number' && Number.isSafeInteger(offer.number) && offer.number > 0);
     if (offers.length === 0) {
       const vistos = Math.max(0, Math.trunc(report.totais.vistos));
       const aviso = report.avisos.find((value): value is string => typeof value === 'string' && !!value.trim());
       const motivo = aviso ? forSpeech(redactKeyLike(aviso)).slice(0, 200).trim() : '';
-      return say(language,
-        `${label} terminou: 0 ofertas e ${vistos} anúncios vistos.${motivo ? ` Aviso: ${motivo}.` : ''} ${painel}`,
-        `${label} finished: 0 offers and ${vistos} ads seen.${motivo ? ` Notice: ${motivo}.` : ''} ${painel}`);
+      const candidatos = Array.isArray(report.candidatosPontuados)
+        ? report.candidatosPontuados.filter((c) => typeof c?.id === 'string' && typeof c?.nota === 'number')
+          .sort((a, b) => Number(b.sinalEscala) - Number(a.sinalEscala)
+            || (b.anunciosDaOferta ?? 0) - (a.anunciosDaOferta ?? 0)
+            || (b.anunciosAtivosPagina ?? 0) - (a.anunciosAtivosPagina ?? 0)
+            || b.nota - a.nota).slice(0, 3)
+        : [];
+      const linhas: string[] = [];
+      const nomes: string[] = [];
+      for (const c of candidatos) {
+        let candidato: Awaited<ReturnType<NonNullable<typeof this.radar>['getCandidate']>> = null;
+        try { candidato = await this.radar?.getCandidate(c.id) ?? null; } catch { /* relatório ainda mostra a nota */ }
+        const nome = forSpeech(candidato?.advertiser ?? c.dominio ?? 'anunciante sem nome').slice(0, 60);
+        const preco = typeof candidato?.raw.precoOrigem === 'number'
+          ? `, origem R$ ${candidato.raw.precoOrigem.toFixed(2).replace('.', ',')}` : ', preço de origem não visível';
+        const ativos = typeof candidato?.raw.activeAdsInDomain === 'number'
+          ? `, ${candidato.raw.activeAdsInDomain} anúncios ativos` : ', anúncios ativos não visíveis';
+        const volume = typeof c.anunciosDaOferta === 'number' ? `, ${c.anunciosDaOferta} anúncios desta oferta` : '';
+        const copias = typeof c.copiasCriativo === 'number' ? `, ${c.copiasCriativo} cópias do criativo` : '';
+        const idade = typeof c.diasNoAr === 'number' ? `, ${c.diasNoAr} dias no ar` : '';
+        nomes.push(`${nome}${volume}, nota ${c.nota}`);
+        linhas.push(`${nome}: nota ${c.nota}${volume}${copias}${idade}${ativos}${preco}\nAnúncio: ${candidato?.adUrl ?? 'link não visível'}\nDestino: ${candidato?.landingUrl ?? 'link não visível'}\n${c.justificativa}`);
+      }
+      const achados = candidatos.length ? say(language,
+        ` ${candidatos.length} candidato(s) pontuado(s), nenhum validado. Melhores: ${nomes.slice(0, 2).join('; ')}.`,
+        ` ${candidatos.length} scored candidate(s), none validated. Best: ${nomes.slice(0, 2).join('; ')}.`) : '';
+      return {
+        text: say(language,
+          `${label} terminou: 0 ofertas e ${vistos} anúncios vistos.${achados}${motivo ? ` Aviso: ${motivo}.` : ''} ${painel}`,
+          `${label} finished: 0 offers and ${vistos} ads seen.${achados}${motivo ? ` Notice: ${motivo}.` : ''} ${painel}`),
+        ...(linhas.length ? { detail: `Candidatos encontrados (ainda não validados):\n${linhas.join('\n\n')}` } : {}),
+      };
     }
     const primeiras: string[] = [];
+    const detalhes: string[] = [];
     for (const item of offers.slice(0, 3)) {
       let nota: number | null = null;
+      let nome = '';
       try {
         const offer = await this.radar?.getOffer(item.number);
         const candidate = offer?.candidateId ? await this.radar?.getCandidate(offer.candidateId) : null;
         const score = candidate?.score?.nota;
         if (typeof score === 'number' && Number.isFinite(score)) nota = score;
+        if (candidate) {
+          nome = forSpeech(candidate.advertiser ?? '').slice(0, 45);
+          const raw = candidate.raw ?? {};
+          const volume = typeof raw.anunciosDaOferta === 'number' ? `${raw.anunciosDaOferta} anúncios da oferta` : 'volume da oferta não visível';
+          const copias = typeof raw.copiasCriativo === 'number'
+            ? `${raw.copiasCriativo} ${raw.copiasCriativo === 1 ? 'cópia' : 'cópias'}` : 'cópias não visíveis';
+          const dias = typeof raw.diasNoAr === 'number' ? `${raw.diasNoAr} dias no ar` : 'início não visível';
+          detalhes.push(`Oferta ${item.number} — ${nome || 'anunciante sem nome'}: ${volume}, ${copias}, ${dias}, nota ${nota ?? 'não visível'}\nAnúncio: ${candidate.adUrl ?? 'link não visível'}\nDestino: ${candidate.landingUrl ?? 'link não visível'}`);
+        }
       } catch {
         // A oferta continua citável pelo número do relatório quando o banco está indisponível.
       }
       primeiras.push(say(language,
-        `oferta ${item.number}, ${nota === null ? 'sem nota' : `nota ${nota}`}`,
+        `oferta ${item.number}${nome ? ` (${nome})` : ''}, ${nota === null ? 'sem nota' : `nota ${nota}`}`,
         `offer ${item.number}, ${nota === null ? 'no score' : `score ${nota}`}`));
     }
-    return say(language,
+    return { text: say(language,
       `${label} terminou com ${offers.length} ${offers.length === 1 ? 'oferta' : 'ofertas'}: ${primeiras.join('; ')}. ${painel}`,
-      `${label} finished with ${offers.length} ${offers.length === 1 ? 'offer' : 'offers'}: ${primeiras.join('; ')}. ${painel}`);
+      `${label} finished with ${offers.length} ${offers.length === 1 ? 'offer' : 'offers'}: ${primeiras.join('; ')}. ${painel}`),
+      ...(detalhes.length ? { detail: detalhes.join('\n\n') } : {}) };
   }
 
   /** Status do trabalho vem do banco, nunca do modelo: com número, estado + último evento; sem, resumo. */
@@ -1093,13 +1177,16 @@ export class NightCoordinator {
       const events = await this.memory.listJobEvents(job.id);
       const last = events[events.length - 1];
       const waiting = this.waitingExplanation(job, language);
-      const text = kind === 'radar' && job.status === 'succeeded'
-        ? await this.radarResult(job, language)
+      const radarResultado = kind === 'radar' && job.status === 'succeeded'
+        ? await this.radarResult(job, language) : null;
+      const text = radarResultado
+        ? radarResultado.text
         : `${jobLabel(kind, language)} ${job.number} ${this.jobState(job, language)}.` +
         (waiting ? ` ${waiting}` : '') +
         (last ? ` ${en ? 'Last event' : 'Último evento'}: ${last.message} (${whenSpoken(last.timestamp, language)}).` : '');
       const detail = [
         `${jobLabel(kind, language)} ${job.number} — ${job.status}`,
+        ...(radarResultado?.detail ? [radarResultado.detail] : []),
         ...events.map((e) => `${e.timestamp} ${e.eventType} [${e.source}] ${e.message}`),
         ...(job.error ? [`${en ? 'error' : 'erro'}: ${job.error}`] : []),
         ...(job.artifactRef ? [`${en ? 'artifact' : 'artefato'}: ${job.artifactRef}`] : []),

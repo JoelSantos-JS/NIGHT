@@ -76,6 +76,7 @@ export function VideoComposition(props: StudioProps) {
                   durationInFrames={durationInFrames}
                   theme={props.theme}
                   titulo={props.titulo}
+                  muteBaseVideo={props.muteBaseVideo ?? true}
                 />
               </SceneTransitionWrapper>
               {scene.audioUrl ? <Audio src={scene.audioUrl} /> : null}

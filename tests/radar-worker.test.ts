@@ -304,6 +304,49 @@ describe('trabalhador do Radar', () => {
     assert.equal(oferta.candidateId, pontuado.id);
   });
 
+  test('preço do concorrente é opcional; alvo da versão própria não descarta oferta', async () => {
+    const jobId = await novoJob();
+    const barato: RawAd = {
+      ...ALTA, externalId: 'barato-19', advertiser: 'Loja Barata',
+      landingUrl: 'https://barato.example/oferta', precoOrigem: 19.9,
+    };
+    const semPreco: RawAd = {
+      ...ALTA, externalId: 'sem-preco', advertiser: 'Loja Sem Preço',
+      landingUrl: 'https://sem-preco.example/oferta', precoOrigem: null,
+    };
+    const source = new FakeSource([[barato, semPreco, ALTA]]);
+    const { generator, chamadas } = geradorFalso();
+    const worker = new RadarWorker({ store, artifacts, source, generator, advisor: servicoComConselheiro() });
+    const { result } = await rodar(worker, pedido(jobId, { precoAlvo: { minimo: 9.9, maximo: 19.9 } }));
+    assert.equal(result.state, 'succeeded', result.error ?? '');
+    assert.equal(chamadas.length, 3, 'preço de origem baixo ou ausente não impede proposta');
+    assert.ok(chamadas.every((c) => /R\$ 9,90 e R\$ 19,90/.test(c[0]!.content)));
+    const relatorio = await lerRelatorio(jobId);
+    assert.equal(relatorio.ofertas.length, 3);
+    assert.ok(!relatorio.avisos.some((aviso) => aviso.includes('preço de origem visível') && aviso.includes('descartados')));
+  });
+
+  test('volume recente da mesma oferta entra na triagem sem preço nem cópia do criativo', async () => {
+    const jobId = await novoJob();
+    const escalando: RawAd = {
+      ...BAIXA, externalId: 'escala-recente', advertiser: 'Loja em Escala',
+      landingUrl: 'https://escala.example/oferta', activeAdsInDomain: 35,
+      anunciosDaOferta: 12, copiasCriativo: 1, diasNoAr: 6,
+      precoOrigem: null, entregavelEmPdf: true,
+    };
+    const { generator, chamadas } = geradorFalso();
+    const worker = new RadarWorker({ store, artifacts, source: new FakeSource([[escalando]]), generator,
+      advisor: servicoComConselheiro() });
+    const { result } = await rodar(worker, pedido(jobId));
+    assert.equal(result.state, 'succeeded', result.error ?? '');
+    assert.equal(chamadas.length, 1);
+    const relatorio = await lerRelatorio(jobId);
+    assert.ok(relatorio.candidatosPontuados[0]!.nota < 6);
+    assert.match(relatorio.candidatosPontuados[0]!.justificativa, /Sinal de tração: 12 anúncios da mesma oferta em 6 dias/);
+    assert.doesNotMatch(relatorio.candidatosPontuados[0]!.justificativa, /reforçado por/);
+    assert.equal(relatorio.ofertas.length, 1);
+  });
+
   test('nota parcial não vira 0 e fica registrada como parcial', async () => {
     const jobId = await novoJob();
     const source = new FakeSource([[PARCIAL]]);

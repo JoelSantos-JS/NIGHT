@@ -5,6 +5,7 @@
 // A resposta do modelo é dado, não instrução: o código valida a forma, corta o tamanho e descarta o que não serve.
 
 import { QuotaError, type ResearchAgent } from '../agents/research.ts';
+import { consultasDeDominio, DOMINIOS_DESCOBERTA, PALAVRAS_PDF, PRECO_ALVO, TAGS_OFERTA } from './search-terms.ts';
 
 export interface NichoPlanejado {
   tipo: 'nicho' | 'oferta';
@@ -33,11 +34,18 @@ const MAX_TERMO = 60;
 
 export function promptNichos(nicho: string, max: number): string {
   return [
-    `Pesquise na internet, agora, os melhores nichos dentro de ${JSON.stringify(nicho)} para criar um produto digital low-ticket`,
-    'no Brasil (PDF, guia ou miniaula vendido por R$ 19,90 a R$ 97, sem precisar gravar curso).',
-    'Procure sinais reais de demanda: ofertas sendo anunciadas, produtos vendendo em Hotmart/Kiwify/Eduzz, buscas em alta.',
+    `Pesquise na internet, agora, ofertas de produto digital no nicho ${JSON.stringify(nicho)} para criar uma versão própria`,
+    `no Brasil com preço final hipotético de R$ ${PRECO_ALVO.minimo.toFixed(2).replace('.', ',')} a R$ ${PRECO_ALVO.maximo.toFixed(2).replace('.', ',')}, sem precisar gravar curso.`,
+    'Siga a página 4 do Radar-de-Ofertas-franklim.pdf: a oferta de ORIGEM deve ser mais cara e ter sinal público de validação; não procure só anúncios que já custam R$ 9,90 ou R$ 19,90.',
+    `Comece pelos domínios de descoberta das capturas do Joel: ${DOMINIOS_DESCOBERTA.join(', ')}. Combine o domínio com uma tag de produto; não trate o host compartilhado como se fosse um único anunciante.`,
+    `Exemplos de consulta combinada: ${consultasDeDominio('atividades pdf', 3).join('; ')}.`,
+    `Tags em português: ${[...TAGS_OFERTA.pt.geral, ...TAGS_OFERTA.pt.pdf].join(', ')}.`,
+    `Tags em espanhol: ${[...TAGS_OFERTA.es.geral, ...TAGS_OFERTA.es.pdf].join(', ')}. Tags em inglês: ${[...TAGS_OFERTA.en.geral, ...TAGS_OFERTA.en.pdf].join(', ')}.`,
+    `Frases do PDF para confirmar a oferta de origem: ${PALAVRAS_PDF.join(', ')}.`,
+    `Tags Black das capturas (só pistas de pesquisa, sem reproduzir promessas): ${[...TAGS_OFERTA.pt.black, ...TAGS_OFERTA.es.black, ...TAGS_OFERTA.en.black].join(', ')}. Não proponha promessas de renda, choque ou cura sem evidência.`,
+    'Procure anúncio ativo, anunciante identificável, domínio ou página própria, preço de origem visível e formato entregável em PDF/planilha/app. Se o preço não estiver visível, diga isso; não invente validação ou vendas.',
     `Traga até ${max} itens. Cada item pode ser um nicho ou uma oferta específica que você encontrou anunciando.`,
-    'Para cada um, dê o termo que um anunciante usaria no anúncio (2 a 5 palavras, em português), para buscar na Biblioteca de Anúncios da Meta.',
+    'Para cada um, dê um termo específico de produto (2 a 5 palavras) para a Biblioteca de Anúncios da Meta, e inclua em fontes o link direto do anúncio ou da página encontrada.',
     'Não invente números nem ofertas: se não achou fonte, não inclua.',
     'Responda SÓ com JSON, sem texto antes ou depois, neste formato:',
     '{"itens":[{"tipo":"nicho","nome":"...","termo":"...","motivo":"...","fontes":["https://..."]}]}',

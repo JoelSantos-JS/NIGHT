@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import pg from 'pg';
-import { forSpeech, nightDataRoot, NightCoordinator, PALAVRAS_LOW_TICKET, PALAVRAS_PRECO_BAIXO, palavrasDaRodada, palavrasDoPedido } from '../src/app/coordinator.ts';
+import {
+  consultasComDominioDaRodada, forSpeech, keywordsDoRadar, nightDataRoot, NightCoordinator,
+  PALAVRAS_LOW_TICKET, PALAVRAS_PRECO_BAIXO, palavrasDaRodada, palavrasDoPedido,
+} from '../src/app/coordinator.ts';
 import { QuotaError } from '../src/agents/research.ts';
 import type { Job, Project } from '../src/core/types.ts';
 import type { JobRunner } from '../src/jobs/runner.ts';
@@ -156,7 +159,10 @@ describe('NightCoordinator', () => {
     const [radar] = await mem.listJobs({ kind: 'radar' });
     assert.equal(radar!.number, 1);
     assert.equal(radar!.status, 'queued');
-    assert.deepEqual(radar!.params, { query: 'fone bluetooth' });
+    // O termo do Joel vem primeiro e não é trocado; as outras consultas combinam com hosts de descoberta.
+    assert.equal(radar!.params.query, 'fone bluetooth');
+    assert.equal((radar!.params.keywords as string[])[0], 'fone bluetooth');
+    assert.ok((radar!.params.keywords as string[]).slice(1).every((k) => k.endsWith('fone bluetooth')));
 
     const v = await night.handle('cria um vídeo sobre café gelado');
     assert.equal(v.text, 'Registrei o Vídeo 1: café gelado. Ainda não há trabalhador ligado, ele fica na fila.');
@@ -165,30 +171,63 @@ describe('NightCoordinator', () => {
     assert.equal(llm.calls.length, 0, 'registrar trabalho não gasta modelo');
   });
 
-  test('Radar de low-ticket varre as frases do método, não a palavra "low ticket"', async () => {
+  test('Radar de low-ticket usa tags do catálogo + domínio, não frases exatas de preço', async () => {
     await night.handle('vasculha ofertas de low ticket');
     const [radar] = await mem.listJobs({ kind: 'radar' });
-    // Frases de preço do PDF, poucas por rodada; nada de nichos do Codex (traziam página sem preço, teste real 21/11).
-    assert.deepEqual(radar!.params, { query: 'low ticket', keywords: palavrasDaRodada() });
-    assert.ok(PALAVRAS_LOW_TICKET.includes('acesso vitalício'));
+    // Produtos por domínio + tag; preço observado não controla a descoberta.
+    assert.equal(radar!.params.query, 'low ticket');
+    const keywords = radar!.params.keywords as string[];
+    assert.deepEqual(keywords, palavrasDoPedido('vasculha ofertas de low ticket'));
+    for (const k of keywords) {
+      assert.match(k, /^\S+\.\S+ .+$/, k);
+      assert.ok(PALAVRAS_LOW_TICKET.some((tag) => k.endsWith(tag)), k);
+    }
+    assert.ok(PALAVRAS_LOW_TICKET.includes('atividades pdf'));
+    assert.deepEqual(radar!.params.precoAlvo, { minimo: 9.9, maximo: 19.9 });
   });
 
-  test('valores mais baixos: frases de R$ 9,90 a R$ 37 (Joel, 21/11)', async () => {
+  test('preço alvo da versão: busca produtos sem consulta só de preço', async () => {
     for (const t of ['pesquisa ofertas low ticket com valores mais baixos', 'vasculha ofertas de R$ 9,90', 'use o radar e procura ofertas baratas']) {
-      assert.ok(palavrasDoPedido(t).every((p) => PALAVRAS_PRECO_BAIXO.includes(p)), t);
+      const consultas = palavrasDoPedido(t);
+      assert.ok(consultas.every((p) => PALAVRAS_PRECO_BAIXO.some((tag) => p.endsWith(tag))), t);
     }
-    assert.ok(palavrasDoPedido('vasculha ofertas de low ticket').every((p) => PALAVRAS_LOW_TICKET.includes(p)));
+    assert.ok(palavrasDoPedido('vasculha ofertas de low ticket').every((p) => PALAVRAS_LOW_TICKET.some((tag) => p.endsWith(tag))));
     await night.handle('vasculha ofertas de R$ 9,90');
     const [radar] = await mem.listJobs({ kind: 'radar' });
-    assert.ok((radar!.params.keywords as string[]).every((p) => PALAVRAS_PRECO_BAIXO.includes(p)));
+    assert.ok(PALAVRAS_PRECO_BAIXO.some((tag) => (radar!.params.keywords as string[])[0]!.endsWith(tag)));
   });
 
   test('frases da rodada: 3 por vez, girando por dia e cobrindo a lista', () => {
     const dia = (n: number) => new Date(n * 86_400_000);
     assert.equal(palavrasDaRodada(dia(0), 3).length, 3);
-    const vistas = new Set([0, 1, 2].flatMap((d) => palavrasDaRodada(dia(d), 3)));
+    const dias = Math.ceil(PALAVRAS_LOW_TICKET.length / 3) + 1;
+    const vistas = new Set(Array.from({ length: dias }, (_, d) => palavrasDaRodada(dia(d), 3)).flat());
     assert.equal(vistas.size, PALAVRAS_LOW_TICKET.length);
     assert.deepEqual(palavrasDaRodada(dia(0), 1), [PALAVRAS_LOW_TICKET[0]]);
+  });
+
+  test('consultas da rodada: domínio + tag, nunca o host isolado', () => {
+    const consultas = consultasComDominioDaRodada(new Date(0), 3);
+    assert.equal(consultas.length, 3);
+    for (const consulta of consultas) assert.match(consulta, /^\S+\.\S+ .+$/);
+    assert.deepEqual(consultas, ['vercel.app atividades para imprimir', 'netlify.app caderno de atividades', 'lovable.app apostila pdf']);
+    assert.deepEqual(consultasComDominioDaRodada(new Date(0), 1), ['vercel.app atividades para imprimir']);
+  });
+
+  test('pedido explícito preserva o termo do Joel; pedido genérico vira catálogo', () => {
+    assert.equal(keywordsDoRadar('vasculha ofertas de fone bluetooth', 'fone bluetooth')[0], 'fone bluetooth');
+    assert.equal(keywordsDoRadar('procura alfabetização para vender por R$ 19,90', 'alfabetização')[0], 'vercel.app alfabetização');
+    assert.equal(keywordsDoRadar('procura produtos digitais de alfabetização', 'produtos digitais alfabetização')[0], 'produtos digitais alfabetização');
+    const generico = keywordsDoRadar('vasculha ofertas de low ticket', 'low ticket');
+    assert.ok(generico.every((k) => /^\S+\.\S+ /.test(k)));
+    assert.ok(PALAVRAS_LOW_TICKET.some((tag) => generico[0]!.endsWith(tag)));
+  });
+
+  test('pedido com nicho e preço da versão preserva o nicho e aplica o alvo', async () => {
+    await night.handle('procura ofertas de alfabetização para vender por R$ 19,90');
+    const [radar] = await mem.listJobs({ kind: 'radar' });
+    assert.equal((radar!.params.keywords as string[])[0], 'vercel.app alfabetização');
+    assert.deepEqual(radar!.params.precoAlvo, { minimo: 9.9, maximo: 19.9 });
   });
 
   test('pedido repetido no mesmo minuto não cria outro trabalho', async () => {
@@ -904,7 +943,7 @@ describe('resultado do Radar no status sem banco', () => {
   }
 
   async function withReport(
-    values: { vistos: number; ofertas: number[]; avisos?: string[] },
+    values: { vistos: number; ofertas: number[]; avisos?: string[]; candidatosPontuados?: unknown[] },
     run: (artifacts: ArtifactStore) => Promise<void>,
   ): Promise<void> {
     const root = await mkdtemp(join(tmpdir(), 'night-radar-status-'));
@@ -916,6 +955,7 @@ describe('resultado do Radar no status sem banco', () => {
           version: 'relatorio-radar/1', jobId: job.id,
           totais: { vistos: values.vistos, novos: 0, duplicados: 0, incompletos: 0 },
           ofertas: values.ofertas.map((number) => ({ number, grupo: `g${number}`, status: 'rascunho' })),
+          candidatosPontuados: values.candidatosPontuados ?? [],
           avisos: values.avisos ?? [],
         }),
       });
@@ -951,6 +991,46 @@ describe('resultado do Radar no status sem banco', () => {
       assert.ok(!reply.text.includes('oferta 4'));
       assert.match(reply.text, /no painel, seção Radar/);
       assert.ok(!reply.text.includes('running -> succeeded'));
+    });
+  });
+
+  test('oferta encontrada mostra anunciante, link e sinais no status', async () => {
+    const radar = {
+      getOffer: async () => ({ number: 1, candidateId: 'c1' }),
+      getCandidate: async () => ({ advertiser: 'Beatriz Reyes',
+        adUrl: 'https://www.facebook.com/ads/library/?id=1512106404315372',
+        landingUrl: 'https://150-atividades-para-casas-de.vercel.app/',
+        raw: { anunciosDaOferta: 12, copiasCriativo: 1, diasNoAr: 6 },
+        score: { nota: 5 } }),
+    } as unknown as RadarConversationStore;
+    await withReport({ vistos: 43, ofertas: [1] }, async (artifacts) => {
+      const reply = await coordinator(artifacts, radar).handle('como está o radar 2?');
+      assert.match(reply.text, /oferta 1 \(Beatriz Reyes\), nota 5/);
+      assert.match(reply.detail ?? '', /12 anúncios da oferta, 1 cópia, 6 dias no ar/);
+      assert.match(reply.detail ?? '', /facebook.com\/ads\/library\/\?id=1512106404315372/);
+      assert.match(reply.detail ?? '', /150-atividades-para-casas-de.vercel.app/);
+    });
+  });
+
+  test('sem oferta validada mostra candidatos reais e links no detalhe', async () => {
+    const radar = {
+      getCandidate: async () => ({
+        advertiser: 'Ana Mungioli',
+        adUrl: 'https://www.facebook.com/ads/library/?id=1159000500423148',
+        landingUrl: 'https://combo-black-ana.vercel.app/',
+        raw: { precoOrigem: 67, activeAdsInDomain: 4 },
+      }),
+    } as unknown as RadarConversationStore;
+    await withReport({
+      vistos: 3, ofertas: [],
+      candidatosPontuados: [{ id: 'c1', dominio: null, nota: 4, parcial: true, justificativa: '4 anúncios ativos na página' }],
+    }, async (artifacts) => {
+      const reply = await coordinator(artifacts, radar).handle('como está o radar 2?');
+      assert.match(reply.text, /1 candidato\(s\) pontuado\(s\), nenhum validado/);
+      assert.match(reply.text, /Ana Mungioli, nota 4/);
+      assert.match(reply.detail ?? '', /4 anúncios ativos, origem R\$ 67,00/);
+      assert.match(reply.detail ?? '', /facebook.com\/ads\/library\/\?id=1159000500423148/);
+      assert.match(reply.detail ?? '', /combo-black-ana.vercel.app/);
     });
   });
 

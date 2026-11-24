@@ -33,6 +33,8 @@ export interface RemotionStudioScene {
   expressao?: string;
   cenario?: string;
   imageUrl?: string | null;
+  videoUrl?: string | null;
+  videoStartSec?: number;
   audioUrl?: string | null;
   cta?: boolean;
 }
@@ -47,6 +49,8 @@ export interface RemotionStudioProps {
   templateId: string;
   theme: RemotionStudioTheme;
   musicUrl?: string | null;
+  baseVideoUrl?: string | null;
+  muteBaseVideo?: boolean;
   scenes: RemotionStudioScene[];
 }
 
@@ -79,15 +83,37 @@ export function buildRemotionProps(plan: RenderPlan, manifest: VideoManifest): R
 
   const cenasPorNumero = new Map(manifest.cenas.map((c) => [c.n, c]));
   const totalCenas = plan.scenes.length;
+  const manifestBaseVideo =
+    typeof manifest.videoBase === 'string' && manifest.videoBase.trim() !== ''
+      ? manifest.videoBase
+      : null;
 
+  let offsetSec = 0;
   const scenes: RemotionStudioScene[] = plan.scenes.map((scene, idx) => {
     const origem = cenasPorNumero.get(scene.n);
     const imageUrl = scene.imagePath.trim() === '' ? null : scene.imagePath;
+    const sceneOwnVideo =
+      typeof origem?.videoBase === 'string' && origem.videoBase.trim() !== ''
+        ? origem.videoBase
+        : null;
+    const videoUrl = sceneOwnVideo ?? manifestBaseVideo;
+    const videoStartSec =
+      origem?.videoStartSec !== undefined
+        ? origem.videoStartSec
+        : sceneOwnVideo !== null
+          ? 0
+          : manifestBaseVideo !== null
+            ? offsetSec
+            : undefined;
+    offsetSec += scene.durationSec;
+
     return {
       n: scene.n,
       durationSec: scene.durationSec,
       narracao: scene.caption,
       imageUrl,
+      ...(videoUrl !== null ? { videoUrl } : {}),
+      ...(videoStartSec !== undefined ? { videoStartSec } : {}),
       audioUrl: scene.audioPath,
       ...(origem?.textoNaTela !== undefined ? { textoNaTela: origem.textoNaTela } : {}),
       ...(origem?.acao !== undefined ? { acao: origem.acao } : {}),
@@ -110,6 +136,8 @@ export function buildRemotionProps(plan: RenderPlan, manifest: VideoManifest): R
     templateId: template.id,
     theme,
     musicUrl: manifest.trilhaAudio ?? null,
+    baseVideoUrl: manifestBaseVideo,
+    muteBaseVideo: manifest.mutarVideoBase ?? true,
     scenes,
   };
 }

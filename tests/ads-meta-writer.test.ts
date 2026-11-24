@@ -56,6 +56,10 @@ describe('ClaudeMcpMetaWriter', () => {
     assert.equal(await w1.findCampaignByName('act_1', 'x'), null);
     const w2 = new ClaudeMcpMetaWriter({ workDir: dir, run: fake('{"id": "9", "status": "paused"}').run, bin: 'claude' });
     assert.equal(await w2.getStatus('9'), 'PAUSED');
+    const w3 = new ClaudeMcpMetaWriter({ workDir: dir, run: fake('{"id": "9", "daily_budget_centavos": 2000}').run, bin: 'claude' });
+    assert.equal(await w3.getAdSetDailyBudgetCentavos('9'), 2000);
+    await assert.rejects(w2.getStatus('outro'), /outro id/);
+    await assert.rejects(w3.getAdSetDailyBudgetCentavos('outro'), /conferir o orçamento/);
   });
 
   test('id inválido, recusa da Meta, falta de login e limite viram erros claros', async () => {

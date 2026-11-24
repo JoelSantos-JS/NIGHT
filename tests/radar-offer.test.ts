@@ -58,6 +58,12 @@ function errosDe(raw: unknown, ctx: ProposalContext = contexto()) {
 }
 
 describe('proposta original do Radar', () => {
+  test('pedido com preço alvo recusa versão fora de R$ 9,90 a R$ 19,90', () => {
+    const ctx = contexto({ precoAlvo: { minimo: 9.9, maximo: 19.9 } });
+    const caro = completa({ precoHipotese: { valor: 27, moeda: 'BRL', justificativa: 'Hipótese', ehHipotese: true } });
+    assert.ok(errosDe(caro, ctx).some((e) => e.campo === 'precoHipotese.valor'));
+    assert.ok(validateProposal(completa(), ctx).ok);
+  });
   test('proposta completa é aceita e sai com a versão do contrato', () => {
     const r = validateProposal(completa(), contexto());
     assert.ok(r.ok);

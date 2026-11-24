@@ -55,6 +55,8 @@ export interface ProposeInput {
   jobId: string;
   candidateIds: string[];
   nicho: string;
+  /** Faixa da versão própria; o preço de origem fica nos candidatos. */
+  precoAlvo?: { minimo: number; maximo: number };
   /** Tentativas totais da geração (a primeira + correções); padrão 2. */
   maxTentativas?: number;
 }
@@ -234,11 +236,13 @@ export async function proposeOffer(deps: ProposeDeps, input: ProposeInput): Prom
   const ctx: ProposalContext = {
     candidateIds: new Set(candidatos.map((c) => c.id)),
     textosDosConcorrentes: candidatos.flatMap((c) => textosDoRaw(c.raw)),
+    ...(input.precoAlvo ? { precoAlvo: input.precoAlvo } : {}),
   };
 
   const mensagens: ProposalMessage[] = buildProposalPrompt({
     nicho: input.nicho,
     candidatos: candidatos.map(entradaDoCandidato),
+    ...(input.precoAlvo ? { precoAlvo: input.precoAlvo } : {}),
   });
 
   let validada: { proposal: OfferProposal; avisos: string[] } | null = null;

@@ -44,6 +44,11 @@ export interface CandidatoPontuado {
   nota: number;
   parcial: boolean;
   justificativa: string;
+  sinalEscala?: boolean;
+  anunciosDaOferta?: number | null;
+  anunciosAtivosPagina?: number | null;
+  copiasCriativo?: number | null;
+  diasNoAr?: number | null;
 }
 
 export interface OfertaRegistrada {
@@ -132,6 +137,14 @@ function precoDoRaw(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }
 
+/** Faixa do preço da versão própria enviada pelo coordenador; não é preço de origem. */
+function precoAlvoDoPedido(value: unknown): { minimo: number; maximo: number } | null {
+  if (!isRecord(value)) return null;
+  const minimo = precoDoRaw(value.minimo);
+  const maximo = precoDoRaw(value.maximo);
+  return minimo !== null && maximo !== null && minimo <= maximo ? { minimo, maximo } : null;
+}
+
 /** Dias entre a data de início (YYYY-MM-DD) e hoje; data ausente/inválida é null. */
 function diasDesde(data: string | null): number | null {
   if (data === null) return null;
@@ -154,6 +167,17 @@ export function entradaDeNota(candidato: RadarCandidate): ScoreInput {
     precoOrigem: precoDoRaw(raw.precoOrigem),
     entregavelEmPdf: typeof raw.entregavelEmPdf === 'boolean' ? raw.entregavelEmPdf : null,
   };
+}
+
+/** Volume da mesma oferta em pouco tempo; cópias reforçam, mas não são requisito. */
+export function sinalDeEscala(candidato: RadarCandidate): boolean {
+  const raw = isRecord(candidato.raw) ? candidato.raw : {};
+  const daOferta = inteiroDoRaw(raw.anunciosDaOferta, 0);
+  const ativosPagina = inteiroDoRaw(raw.activeAdsInDomain, 0);
+  const dias = inteiroDoRaw(raw.diasNoAr, 0) ?? diasDesde(candidato.startedAt);
+  return daOferta !== null && daOferta >= 11
+    && ativosPagina !== null && ativosPagina >= 11
+    && dias !== null && dias <= 14;
 }
 
 /** Chave estável do grupo de candidatos que vira uma oferta. */
@@ -333,6 +357,7 @@ export class RadarWorker implements JobWorker {
         return;
       }
       let keywords = keywordsDoPedido(request.params.keywords, query);
+      const precoAlvo = precoAlvoDoPedido(request.params.precoAlvo);
 
       // (1) Fonte não provada: esperar é honesto; coletar seria inventar anúncio.
       if (this.source === null) {
@@ -394,6 +419,7 @@ export class RadarWorker implements JobWorker {
       run.message = 'dando nota aos candidatos';
       const pontuados: CandidatoPontuado[] = [];
       const notas = new Map<string, ScoreResultado>();
+      const escala = new Map<string, boolean>();
       for (const id of ids) {
         const candidato = await this.store.getCandidate(id);
         if (candidato === null) continue;
@@ -403,12 +429,18 @@ export class RadarWorker implements JobWorker {
           await this.store.setScore(id, nota);
         }
         notas.set(id, nota);
+        escala.set(id, sinalDeEscala(candidato));
         pontuados.push({
           id,
           dominio: candidato.domain,
           nota: nota.nota,
           parcial: nota.parcial,
-          justificativa: nota.justificativa,
+          justificativa: `${nota.justificativa}${escala.get(id) ? ` Sinal de tração: ${candidato.raw.anunciosDaOferta} anúncios da mesma oferta em ${entradaDeNota(candidato).diasNoAr} dias${inteiroDoRaw(candidato.raw.copiasCriativo, 1)! >= 2 ? `, reforçado por ${candidato.raw.copiasCriativo} cópias do criativo` : ''}; venda não comprovada.` : ''}`,
+          sinalEscala: escala.get(id) === true,
+          anunciosDaOferta: inteiroDoRaw(candidato.raw.anunciosDaOferta, 0),
+          anunciosAtivosPagina: inteiroDoRaw(candidato.raw.activeAdsInDomain, 0),
+          copiasCriativo: inteiroDoRaw(candidato.raw.copiasCriativo, 1),
+          diasNoAr: entradaDeNota(candidato).diasNoAr,
         });
         if (await this.parar(run)) return;
       }
@@ -418,10 +450,15 @@ export class RadarWorker implements JobWorker {
 
       if (await this.parar(run)) return;
 
-      // (4) Parcial só entra com os critérios observáveis da Meta.
+      // (4) Preço do anúncio é evidência opcional. A faixa pedida é para a versão própria;
+      // preço ausente ou diferente no concorrente não elimina uma oferta modelável.
       const escolhidos = pontuados
-        .filter((p) => acimaDoCorte(notas.get(p.id)!))
-        .sort((a, b) => b.nota - a.nota || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .filter((p) => acimaDoCorte(notas.get(p.id)!) || escala.get(p.id) === true)
+        .sort((a, b) => Number(b.sinalEscala) - Number(a.sinalEscala)
+          || (b.anunciosDaOferta ?? 0) - (a.anunciosDaOferta ?? 0)
+          || (b.copiasCriativo ?? 0) - (a.copiasCriativo ?? 0)
+          || (b.anunciosAtivosPagina ?? 0) - (a.anunciosAtivosPagina ?? 0)
+          || b.nota - a.nota || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
         .slice(0, MAX_OFERTAS_RADAR);
 
       for (const p of escolhidos) {
@@ -474,7 +511,7 @@ export class RadarWorker implements JobWorker {
         run.message = `gerando oferta (${candidateIds.length} candidato(s))`;
         const resultado = await proposeOffer(
           { store: this.store, generator, advisor, ...(tracker ? { tracker } : {}) },
-          { jobId: request.jobId, candidateIds, nicho: query },
+          { jobId: request.jobId, candidateIds, nicho: query, ...(precoAlvo ? { precoAlvo } : {}) },
         );
         if (resultado.status === 'criada') {
           const gravada = await this.store.getOffer(resultado.number);

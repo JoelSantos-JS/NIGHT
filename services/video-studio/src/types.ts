@@ -33,6 +33,8 @@ export interface StudioScene {
   expressao?: string;
   cenario?: string;
   imageUrl?: string | null;
+  videoUrl?: string | null;
+  videoStartSec?: number;
   audioUrl?: string | null;
   cta?: boolean;
 }
@@ -47,6 +49,8 @@ export interface StudioProps extends Record<string, unknown> {
   templateId: VisualTemplateId;
   theme: StudioTheme;
   musicUrl?: string | null;
+  baseVideoUrl?: string | null;
+  muteBaseVideo?: boolean;
   scenes: StudioScene[];
 }
 
@@ -57,6 +61,7 @@ export interface TemplateComponentProps {
   durationInFrames: number;
   theme: StudioTheme;
   titulo: string;
+  muteBaseVideo?: boolean;
 }
 
 export const FONT_STACKS: Record<FontMood, string> = {

@@ -1,6 +1,7 @@
 // Monta o Night: memória, modelo local, roteador, pesquisadores, executor de tarefas e coordenador.
 // Usado pelo modo texto, pelo modo voz e pelo teste de voz.
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { DeepSeekAdvisor } from '../advisor/deepseek-client.ts';
 import { PgAdvisorJournal } from '../advisor/journal.ts';
@@ -35,6 +36,8 @@ import { PgOfferLinks } from '../lowticket/links.ts';
 import { LowticketWorker } from '../lowticket/worker.ts';
 import { MetaMcpAdSource } from '../radar/meta-mcp-source.ts';
 import { CodexMcpAdSource } from '../radar/codex-mcp-source.ts';
+import { BrowserAdLibrarySource } from '../radar/browser-source.ts';
+import type { AdSource } from '../radar/collect.ts';
 import { findCodexLiveBin } from './voz-ao-vivo.ts';
 import { OpenBotEspelho } from '../openbot/espelho.ts';
 
@@ -54,6 +57,99 @@ export function nightPaths(dataRoot: string = nightDataRoot()): NightPaths {
     videoWork: join(dataRoot, 'video-work'),
     flowImages: join(dataRoot, 'flow-import'),
   };
+}
+
+/** playwright-core instalado? A fonte do navegador só liga quando dá para abrir a Biblioteca. */
+export function playwrightDisponivel(): boolean {
+  try {
+    createRequire(import.meta.url).resolve('playwright-core');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface FonteRadar {
+  /** null = sem fonte: o Radar espera em vez de inventar anúncio. */
+  source: AdSource | null;
+  /** Texto curto para o painel de conexões. */
+  descricao: string;
+}
+
+export interface FonteRadarOptions {
+  /** NIGHT_RADAR_PROVIDER: browser | claude | codex | mcp | off. Vazio = automático. */
+  provider?: string | null;
+  /** Ferramentas de leitura do MCP da Meta; vazio desliga o MCP. */
+  metaReadTools: string[];
+  /** Pasta do conector MCP da Meta. */
+  workDir: string;
+  /** Injetável nos testes. */
+  browserDisponivel?: boolean;
+  /** Binário do Codex para a fonte MCP do Codex. */
+  codexBin?: string;
+}
+
+/**
+ * Escolhe a fonte real do Radar.
+ *
+ * - `browser` (ou automático, quando playwright-core existe): lê a página da Biblioteca de Anúncios.
+ * - `claude` / `mcp`: conector MCP oficial da Meta numa sessão só de leitura (fallback que já existia).
+ * - `codex`: Codex com a ferramenta ads_library_search (fallback que já existia).
+ * - `off`: Radar espera uma fonte, sem inventar anúncio.
+ *
+ * Fonte explícita que não consegue subir cai para o navegador quando ele está disponível; sem isso, devolve
+ * null com o motivo, e o Radar espera em vez de fingir coleta.
+ */
+export function escolherFonteRadar(opts: FonteRadarOptions): FonteRadar {
+  const provider = (opts.provider ?? '').trim().toLowerCase();
+  const browserOk = opts.browserDisponivel ?? playwrightDisponivel();
+  if (provider === 'off' || provider === 'none') {
+    return { source: null, descricao: 'desligada (NIGHT_RADAR_PROVIDER=off)' };
+  }
+
+  const criarBrowser = (): FonteRadar => browserOk
+    ? { source: new BrowserAdLibrarySource(), descricao: 'navegador (Biblioteca de Anúncios)' }
+    : { source: null, descricao: 'navegador indisponível (falta playwright-core)' };
+  const criarMcp = (): FonteRadar => {
+    if (opts.metaReadTools.length === 0) return { source: null, descricao: 'MCP da Meta desligado (NIGHT_META_READ_TOOLS=off)' };
+    try {
+      return {
+        source: new MetaMcpAdSource({ readTools: opts.metaReadTools, workDir: opts.workDir }),
+        descricao: `MCP da Meta (${opts.metaReadTools.join(', ')})`,
+      };
+    } catch (err) {
+      return { source: null, descricao: `MCP da Meta não subiu: ${(err as Error).message.slice(0, 120)}` };
+    }
+  };
+  const criarCodex = (): FonteRadar => {
+    try {
+      return {
+        source: new CodexMcpAdSource({
+          workDir: opts.workDir,
+          // O Codex do OpenBot (>= 0.156): o da extensão do VS Code (0.155) não carrega o conector (21/11).
+          bin: opts.codexBin ?? process.env.NIGHT_RADAR_CODEX_BIN ?? findCodexLiveBin() ?? undefined,
+        }),
+        descricao: 'Codex com ads_library_search',
+      };
+    } catch (err) {
+      return { source: null, descricao: `Codex indisponível: ${(err as Error).message.slice(0, 120)}` };
+    }
+  };
+
+  // Fonte explícita que não subiu não deixa o Radar sem leitura quando o navegador está disponível.
+  const comFallback = (preferida: FonteRadar): FonteRadar =>
+    preferida.source !== null || !browserOk ? preferida : criarBrowser();
+
+  if (provider === 'browser') return criarBrowser();
+  if (provider === 'claude') return comFallback(criarMcp());
+  if (provider === 'codex') return comFallback(criarCodex());
+  if (provider === 'mcp') return comFallback(criarMcp());
+  if (provider !== '') return { source: null, descricao: `NIGHT_RADAR_PROVIDER desconhecido: ${provider}` };
+
+  // Automático: navegador primeiro (a página mostra preço e texto); MCP da Meta/Codex como fallback.
+  if (browserOk) return criarBrowser();
+  if (opts.metaReadTools.length > 0) return criarCodex();
+  return { source: null, descricao: 'sem fonte: instale playwright-core ou configure NIGHT_META_READ_TOOLS' };
 }
 
 /** Modo texto: não há Kokoro carregado; o erro marcado faz o vídeo esperar o modo voz. */
@@ -143,6 +239,13 @@ export async function createNight(opts: CreateNightOptions = {}) {
   const metaReadTools = process.env.NIGHT_META_READ_TOOLS === 'off' ? []
     : (process.env.NIGHT_META_READ_TOOLS ?? 'mcp__meta-ads__ads_library_search').split(',').map((t) => t.trim()).filter(Boolean);
   const metaAdAccount = process.env.NIGHT_META_AD_ACCOUNT?.trim() || null;
+  // Fonte real do Radar: navegador (Biblioteca de Anúncios) quando disponível; MCP da Meta/Codex como fallback
+  // configurável. Sem nenhuma, o Radar espera em vez de inventar anúncio.
+  const fonteRadar = escolherFonteRadar({
+    provider: process.env.NIGHT_RADAR_PROVIDER,
+    metaReadTools,
+    workDir: join(paths.data, 'meta-mcp'),
+  });
   // Relatório da campanha (M07): mesma pasta do writer, e o nome da ferramenta pode mudar no beta.
   const metaInsightsTool = process.env.NIGHT_META_INSIGHTS_TOOL?.trim() || undefined;
   // D11: DeepSeek é a reserva (conversa, pesquisa e revisão), mas só liga quando a chave existe.
@@ -194,20 +297,12 @@ export async function createNight(opts: CreateNightOptions = {}) {
       advisor,
       generator: textGenerator,
     });
-    // Sem fonte (NIGHT_META_READ_TOOLS=off), o Radar espera 'fonte' em vez de inventar anúncio.
+    // Sem fonte, o Radar espera 'fonte' em vez de inventar anúncio.
     const radar = new RadarWorker({
       store: radarStore,
       artifacts,
       planejador: new PlanejadorComPesquisa(researchers),
-      source: metaReadTools.length
-        ? process.env.NIGHT_RADAR_PROVIDER === 'claude'
-          ? new MetaMcpAdSource({ readTools: metaReadTools, workDir: join(paths.data, 'meta-mcp') })
-          : new CodexMcpAdSource({
-            workDir: join(paths.data, 'meta-mcp'),
-            // O Codex do OpenBot (>= 0.156): o da extensão do VS Code (0.155) não carrega o conector da Meta (21/11).
-            bin: process.env.NIGHT_RADAR_CODEX_BIN ?? findCodexLiveBin() ?? undefined,
-          })
-        : null,
+      source: fonteRadar.source,
       generator: textGenerator ?? null,
       advisor,
     });
@@ -288,7 +383,7 @@ export async function createNight(opts: CreateNightOptions = {}) {
     { nome: 'Banco (PostgreSQL)', ok: true, detalhe: 'conectado' },
     { nome: 'Modelo local (Ollama)', ok: await llm.available(), detalhe: llm.model },
     { nome: 'DeepSeek (parecer e reserva)', ok: hasDeepSeek, detalhe: hasDeepSeek ? 'chave encontrada' : 'sem chave: defina DEEPSEEK_API_KEY ou ~/.deepseek/api_key' },
-    { nome: 'Meta: leitura da Biblioteca (Radar)', ok: metaReadTools.length > 0, detalhe: metaReadTools.length ? metaReadTools.join(', ') : 'desligada (NIGHT_META_READ_TOOLS=off)' },
+    { nome: 'Meta: leitura da Biblioteca (Radar)', ok: fonteRadar.source !== null, detalhe: fonteRadar.descricao },
     { nome: 'Meta: conta de anúncios (campanha)', ok: metaAdAccount !== null, detalhe: metaAdAccount ?? 'falta NIGHT_META_AD_ACCOUNT' },
     { nome: 'OpenBot (automação)', ok: openbot.estado().ligado, detalhe: openbot.estado().motivo ?? `agentes: ${openbot.estado().agentes.map((a) => a.nome).join(', ')}` },
     { nome: 'OpenBot (telas)', ok: existsSync(join(process.env.LOCALAPPDATA ?? '', 'Programs', 'OpenBot', 'OpenBot.exe')), detalhe: 'telas pelo servidor MCP; pacote com pnpm night:telas' },

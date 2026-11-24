@@ -148,6 +148,8 @@ export interface MetaAdsWriter {
   }): Promise<{ id: string }>;
   /** Leitura de volta: o NIGHT confere o status em vez de confiar na resposta da criação. */
   getStatus(id: string): Promise<string>;
+  /** Orçamento diário real do conjunto, em centavos, para conferir uma retomada. */
+  getAdSetDailyBudgetCentavos(id: string): Promise<number>;
 }
 
 /** Aprovação do Joel com o valor dito na frase ("aprovo montar a campanha da oferta 2 com R$ 20 por dia"). */
@@ -218,6 +220,7 @@ export async function buildPausedCampaign(deps: {
     // Campanha: efeito já registrado, ou procura pelo nome (cobre queda entre criar e registrar).
     let campaignId = await effectValue(memory, jobId, EFFECT.campaign);
     let reaproveitada = Boolean(campaignId);
+    let campanhaCriadaAgora = false;
     if (!campaignId) {
       const existente = await writer.findCampaignByName(adAccountId, draft.nome);
       if (existente) {
@@ -225,45 +228,60 @@ export async function buildPausedCampaign(deps: {
         reaproveitada = true;
       } else {
         campaignId = (await writer.createCampaign({ adAccountId, nome: draft.nome, objetivo: draft.objetivo, status: 'PAUSED' })).id;
-        await sleep(pausa);
+        campanhaCriadaAgora = true;
       }
       await memory.recordJobEffect(jobId, EFFECT.campaign, 'meta', `campanha id=${campaignId}`);
     }
     criados.campanha = campaignId;
+    // Inclusive na retomada: uma campanha ativada manualmente não pode receber novos itens.
+    let status = await writer.getStatus(campaignId);
+    if (status !== 'PAUSED') {
+      return { status: 'parada', motivo: `ATENÇÃO: campanha ${campaignId} está ${status}, não pausada. Pause agora no Gerenciador de Anúncios.`, criados };
+    }
+    if (campanhaCriadaAgora) await sleep(pausa);
 
     let adSetId = await effectValue(memory, jobId, EFFECT.adSet);
+    let conjuntoCriadoAgora = false;
     if (!adSetId) {
       adSetId = (await writer.createAdSet({
         adAccountId, campaignId, nome: `${draft.nome} · conjunto`,
         orcamentoDiarioCentavos: Math.round(orcamento * 100), publico: draft.publico, status: 'PAUSED',
       })).id;
+      conjuntoCriadoAgora = true;
       await memory.recordJobEffect(jobId, EFFECT.adSet, 'meta', `conjunto id=${adSetId}`);
-      await sleep(pausa);
     }
     criados.conjunto = adSetId;
+    status = await writer.getStatus(adSetId);
+    if (status !== 'PAUSED') {
+      return { status: 'parada', motivo: `ATENÇÃO: conjunto ${adSetId} está ${status}, não pausado. Pause agora no Gerenciador de Anúncios.`, criados };
+    }
+    const orcamentoCentavos = Math.round(orcamento * 100);
+    const orcamentoReal = await writer.getAdSetDailyBudgetCentavos(adSetId);
+    if (orcamentoReal !== orcamentoCentavos) {
+      return { status: 'parada', motivo: `O conjunto ${adSetId} tem orçamento de R$ ${(orcamentoReal / 100).toFixed(2)}/dia, diferente dos R$ ${orcamento.toFixed(2)}/dia aprovados. Confira no Gerenciador de Anúncios.`, criados };
+    }
+    if (conjuntoCriadoAgora) await sleep(pausa);
 
     const adIds: string[] = [];
     for (const [i, criativo] of draft.criativos.entries()) {
       if (!isHttps(criativo.imagemUrl)) continue; // sem imagem publicada não vira anúncio
       let adId = await effectValue(memory, jobId, EFFECT.ad(i));
+      let anuncioCriadoAgora = false;
       if (!adId) {
         adId = (await writer.createAd({
           adAccountId, adSetId, nome: `${draft.nome} · ${i + 1}`, criativo, destinoUrl: draft.destinoUrl!, status: 'PAUSED',
         })).id;
+        anuncioCriadoAgora = true;
         await memory.recordJobEffect(jobId, EFFECT.ad(i), 'meta', `anúncio id=${adId}`);
-        await sleep(pausa);
       }
       adIds.push(adId);
       criados[`anuncio${i + 1}`] = adId;
-    }
-
-    // Leitura de volta: tudo tem que estar pausado. Se não estiver, para e avisa (o NIGHT não pode
-    // pausar sozinho, porque a chave de status fica desligada de propósito).
-    for (const [nome, id] of Object.entries(criados)) {
-      const status = await writer.getStatus(id);
+      // A conferência acontece antes de criar o próximo anúncio.
+      status = await writer.getStatus(adId);
       if (status !== 'PAUSED') {
-        return { status: 'parada', motivo: `ATENÇÃO: ${nome} ${id} está ${status}, não pausado. Pause agora no Gerenciador de Anúncios.`, criados };
+        return { status: 'parada', motivo: `ATENÇÃO: anuncio${i + 1} ${adId} está ${status}, não pausado. Pause agora no Gerenciador de Anúncios.`, criados };
       }
+      if (anuncioCriadoAgora) await sleep(pausa);
     }
     return { status: 'criada', campaignId, adSetId, adIds, reaproveitada };
   } catch (err) {

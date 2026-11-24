@@ -40,6 +40,7 @@ class FakeWriter implements MetaAdsWriter {
   calls: string[] = [];
   existentes = new Map<string, string>();
   status = new Map<string, string>();
+  budgets = new Map<string, number>();
   falharEm: string | null = null;
   private n = 0;
   private novo(tipo: string) {
@@ -61,7 +62,9 @@ class FakeWriter implements MetaAdsWriter {
   async createAdSet(input: { status: 'PAUSED'; orcamentoDiarioCentavos: number }) {
     assert.equal(input.status, 'PAUSED');
     this.calls.push(`adset:${input.orcamentoDiarioCentavos}`);
-    return this.novo('adset');
+    const item = this.novo('adset');
+    this.budgets.set(item.id, input.orcamentoDiarioCentavos);
+    return item;
   }
   async createAd(input: { status: 'PAUSED' }) {
     assert.equal(input.status, 'PAUSED');
@@ -70,6 +73,11 @@ class FakeWriter implements MetaAdsWriter {
   }
   async getStatus(id: string) {
     return this.status.get(id) ?? this.existentesStatus ?? 'PAUSED';
+  }
+  async getAdSetDailyBudgetCentavos(id: string) {
+    const budget = this.budgets.get(id);
+    if (budget === undefined) throw new Error('orçamento do conjunto indisponível');
+    return budget;
   }
   existentesStatus: string | null = null;
 }
@@ -186,6 +194,42 @@ describe('criação pausada (M04, M06)', () => {
     assert.ok(!w.calls.includes('campaign'));
   });
 
+  test('retomada para antes de criar conjunto se a campanha existente está ativa', async () => {
+    const w = new FakeWriter();
+    w.existentes.set(draft.nome, 'campaign-existente');
+    w.existentesStatus = 'ACTIVE';
+    const r = await buildPausedCampaign({ memory: mem, writer: w, adAccountId: 'act_1', sleep: noSleep }, { jobId, draft, approval });
+    assert.equal(r.status, 'parada');
+    assert.match(r.status === 'parada' ? r.motivo : '', /campanha.*ACTIVE/);
+    assert.deepEqual(w.calls, ['find']);
+  });
+
+  test('para após criar campanha ou conjunto ativo, antes de criar o próximo item', async () => {
+    for (const tipo of ['campaign', 'adset']) {
+      await truncateAll();
+      jobId = (await mem.createJob({ kind: 'radar', origin: 'texto', idempotencyKey: `camp-${Date.now()}-${Math.random()}` })).job.id;
+      const w = new FakeWriter();
+      const original = w.getStatus.bind(w);
+      w.getStatus = async (id: string) => id.startsWith(tipo + '-') ? 'ACTIVE' : original(id);
+      const r = await buildPausedCampaign({ memory: mem, writer: w, adAccountId: 'act_1', sleep: noSleep }, { jobId, draft, approval });
+      assert.equal(r.status, 'parada');
+      assert.ok(!w.calls.includes('ad'), 'nenhum anúncio criado depois de status ativo');
+      if (tipo === 'campaign') assert.ok(!w.calls.some((call) => call.startsWith('adset:')));
+    }
+  });
+
+  test('orçamento real divergente na retomada para antes de criar anúncios', async () => {
+    const w = new FakeWriter();
+    await buildPausedCampaign({ memory: mem, writer: w, adAccountId: 'act_1', sleep: noSleep }, { jobId, draft, approval });
+    const conjunto = [...w.budgets.keys()][0]!;
+    w.budgets.set(conjunto, 3500);
+    const antes = w.calls.length;
+    const r = await buildPausedCampaign({ memory: mem, writer: w, adAccountId: 'act_1', sleep: noSleep }, { jobId, draft, approval });
+    assert.equal(r.status, 'parada');
+    assert.match(r.status === 'parada' ? r.motivo : '', /35\.00.*20\.00/);
+    assert.equal(w.calls.length, antes);
+  });
+
   test('erro da Meta para na hora, sem tentar de novo, e conta o que já existe', async () => {
     const w = new FakeWriter();
     w.falharEm = 'adset';
@@ -204,6 +248,7 @@ describe('criação pausada (M04, M06)', () => {
     const r = await buildPausedCampaign({ memory: mem, writer: w, adAccountId: 'act_1', sleep: noSleep }, { jobId, draft, approval });
     assert.equal(r.status, 'parada');
     assert.match(r.status === 'parada' ? r.motivo : '', /ATENÇÃO.*ACTIVE.*Pause agora/);
+    assert.equal(w.calls.filter((call) => call === 'ad').length, 1, 'não cria o segundo anúncio');
   });
 
   test('recusa sem tocar na Meta: oferta errada, orçamento acima do teto, sem valor, rascunho com pendência', async () => {

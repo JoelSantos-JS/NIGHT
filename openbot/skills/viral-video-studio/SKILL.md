@@ -35,6 +35,16 @@ Se um detalhe não foi fornecido, usar defaults; perguntar apenas por conta/auto
 9. Modo padrão: `review_before_publish`. Publicação sem revisão só após opt-in explícito, contas autorizadas, políticas e limites configurados; aprovação para mudanças de configuração de canais e exclusões permanece obrigatória.
 10. Proibir conteúdo enganoso, violação de direitos de terceiros, spam repetitivo ou alegações factuais inventadas. Não prometer viralização.
 
+## Regra de Campanha e Modelagem de Ofertas (`ad-creative`)
+Toda modelagem ou variação de vídeo de campanha/anúncio no template `ad-creative` deve operar em um de **dois modos explícitos** (`modoCampanha`):
+1. **Modo `inspiracao` (padrão para anúncios de terceiros / Radar):**
+   - Usa `analyzeReferenceVideo` para abstrair gancho (até 3s), ritmo de cortes, paleta, estrutura e ângulo da oferta, e gera um criativo **100% autoral** (cenas novas, roteiro novo, voz própria e CTA).
+   - **Proibido** reutilizar mídia bruta de concorrentes/terceiros apenas trocando o áudio ou colando texto por cima (evita violação de direitos autorais e bloqueio de conta/anúncio por mídia duplicada).
+2. **Modo `overlay-proprio` (apenas com vídeo-base próprio ou licenciado):**
+   - Aplicado quando o vídeo-base é do próprio operador (ex.: gravação folheando PDF/produto, B-roll autoral ou criativo próprio para testar múltiplos ganchos).
+   - Exige `videoBase` + `videoBaseAutorizado: true` no manifesto (sem `videoBaseAutorizado: true`, `readyForFinalRender` bloqueia a entrega final).
+   - Substitui/muta o áudio original (`mutarVideoBase: true`), insere nova narração, gancho no topo (`textoNaTela`), selos curtos de benefício (`assets`), legendas dinâmicas e CTA animado na última cena.
+
 ## Sequência operacional (máquina de estados)
 `RECEIVED -> REFERENCE_CHECKED -> SCRIPTING -> STORYBOARD_APPROVED -> ASSET_BUILD -> RENDERING -> QA -> READY_FOR_REVIEW -> APPROVED -> PUBLISHING -> PUBLISHED/PARTIAL/FAILED`
 - `STORYBOARD_APPROVED`: em modo rápido pode ser aprovação automática interna do esquema e das regras; não significa aceite do usuário.

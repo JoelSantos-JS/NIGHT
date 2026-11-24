@@ -13,11 +13,13 @@
 import { createHash } from 'node:crypto';
 import { validateBrief, type IdiomaVideo, type VideoBrief } from './brief.ts';
 import {
+  CAMPAIGN_VIDEO_MODES,
   FONT_MOODS,
   SCENE_TRANSITIONS,
   VISUAL_ENGINES,
   getVideoTemplate,
   templateRequiresImages,
+  type CampaignVideoMode,
   type FontMood,
   type SceneTransition,
   type StylePalette,
@@ -68,6 +70,9 @@ export interface Scene {
   pose?: string;
   expressao?: string;
   cenario?: string;
+  /** Vídeo-base próprio/licenciado por cena (modo overlay-proprio em campanhas). */
+  videoBase?: string | null;
+  videoStartSec?: number;
 }
 
 export interface VideoManifest {
@@ -82,6 +87,11 @@ export interface VideoManifest {
   templateVisual?: string;
   styleRecipe?: StyleRecipe;
   trilhaAudio?: string | null;
+  /** Regras de campanha/modelagem (ad-creative): inspiração autoral ou overlay sobre vídeo próprio. */
+  modoCampanha?: CampaignVideoMode;
+  videoBase?: string | null;
+  videoBaseAutorizado?: boolean;
+  mutarVideoBase?: boolean;
 }
 
 export interface ManifestProblem {
@@ -186,6 +196,13 @@ function dataIsoValida(value: unknown): value is string {
 function resumir(texto: string, max = 60): string {
   const limpo = texto.trim();
   return limpo.length <= max ? limpo : limpo.slice(0, max - 1) + '…';
+}
+
+function hasVideoBaseConfigured(videoBase: string | null | undefined, cenas: readonly Scene[]): boolean {
+  return (
+    (typeof videoBase === 'string' && videoBase.trim() !== '') ||
+    cenas.some((c) => typeof c.videoBase === 'string' && c.videoBase.trim() !== '')
+  );
 }
 
 /**
@@ -388,6 +405,19 @@ export function validateManifest(
         erro(`${campo}.cenario`, 'deve ser texto'); okCena = false;
       }
 
+      const sceneVideoBase = item.videoBase;
+      if (sceneVideoBase !== undefined && sceneVideoBase !== null && typeof sceneVideoBase !== 'string') {
+        erro(`${campo}.videoBase`, 'deve ser texto ou null'); okCena = false;
+      }
+
+      const videoStartSec = item.videoStartSec;
+      if (
+        videoStartSec !== undefined &&
+        (typeof videoStartSec !== 'number' || !Number.isFinite(videoStartSec) || videoStartSec < 0)
+      ) {
+        erro(`${campo}.videoStartSec`, 'deve ser número maior ou igual a zero'); okCena = false;
+      }
+
       if (okCena) {
         cenas.push({
           n: n as number,
@@ -406,6 +436,8 @@ export function validateManifest(
           ...(pose !== undefined ? { pose: pose as string } : {}),
           ...(expressao !== undefined ? { expressao: expressao as string } : {}),
           ...(cenario !== undefined ? { cenario: cenario as string } : {}),
+          ...(sceneVideoBase !== undefined ? { videoBase: sceneVideoBase as string | null } : {}),
+          ...(videoStartSec !== undefined ? { videoStartSec: videoStartSec as number } : {}),
         });
         totalSeg += duracao as number;
       }
@@ -441,6 +473,47 @@ export function validateManifest(
     }
   }
 
+  let modoCampanha: CampaignVideoMode | undefined;
+  if (raw.modoCampanha !== undefined) {
+    if (typeof raw.modoCampanha !== 'string' || !(CAMPAIGN_VIDEO_MODES as readonly string[]).includes(raw.modoCampanha)) {
+      erro('modoCampanha', `esperava um de: ${CAMPAIGN_VIDEO_MODES.join(', ')}`);
+    } else {
+      modoCampanha = raw.modoCampanha as CampaignVideoMode;
+    }
+  }
+
+  let videoBase: string | null | undefined;
+  if (raw.videoBase !== undefined) {
+    if (raw.videoBase !== null && typeof raw.videoBase !== 'string') {
+      erro('videoBase', 'deve ser texto ou null');
+    } else {
+      videoBase = raw.videoBase;
+    }
+  }
+
+  let videoBaseAutorizado: boolean | undefined;
+  if (raw.videoBaseAutorizado !== undefined) {
+    if (typeof raw.videoBaseAutorizado !== 'boolean') {
+      erro('videoBaseAutorizado', 'deve ser true ou false');
+    } else {
+      videoBaseAutorizado = raw.videoBaseAutorizado;
+    }
+  }
+
+  let mutarVideoBase: boolean | undefined;
+  if (raw.mutarVideoBase !== undefined) {
+    if (typeof raw.mutarVideoBase !== 'boolean') {
+      erro('mutarVideoBase', 'deve ser true ou false');
+    } else {
+      mutarVideoBase = raw.mutarVideoBase;
+    }
+  }
+
+  const temVideoBase = hasVideoBaseConfigured(videoBase, cenas);
+  if (modoCampanha === 'overlay-proprio' && !temVideoBase) {
+    erro('videoBase', 'modo overlay-proprio exige videoBase próprio ou licenciado');
+  }
+
   // Só compara com o briefing quando ele é válido e todas as cenas têm duração.
   if (brief !== null && duracoesOk && cenas.length > 0 && cenas.length === (Array.isArray(listaCenas) ? listaCenas.length : 0)) {
     const alvo = brief.duracaoAlvoSeg;
@@ -469,10 +542,19 @@ export function validateManifest(
     ...(templateVisual !== undefined ? { templateVisual } : {}),
     ...(styleRecipe !== undefined ? { styleRecipe } : {}),
     ...(trilhaAudio !== undefined ? { trilhaAudio } : {}),
+    ...(modoCampanha !== undefined ? { modoCampanha } : {}),
+    ...(videoBase !== undefined ? { videoBase } : {}),
+    ...(videoBaseAutorizado !== undefined ? { videoBaseAutorizado } : {}),
+    ...(mutarVideoBase !== undefined ? { mutarVideoBase } : {}),
   };
 
   // Avisos: não bloqueiam a montagem, mas ficam visíveis para o Joel.
   const avisos: string[] = [];
+  if (temVideoBase && videoBaseAutorizado !== true) {
+    avisos.push(
+      'videoBase sem confirmação de autoria/licença (defina videoBaseAutorizado: true apenas para vídeo próprio ou licenciado)',
+    );
+  }
   for (const cena of cenas) {
     for (const a of cena.afirmacoes) {
       if ((a.fonte === null || a.fonte.trim() === '') && !a.duvida) {
@@ -507,6 +589,12 @@ export function validateManifest(
 export function readyForFinalRender(manifest: VideoManifest): { pronto: boolean; pendencias: string[] } {
   const pendencias: string[] = [];
   const exigeImagens = templateRequiresImages(manifest.templateVisual);
+  const temVideoBase = hasVideoBaseConfigured(manifest.videoBase, manifest.cenas);
+  if (temVideoBase && manifest.videoBaseAutorizado !== true) {
+    pendencias.push(
+      'videoBase sem confirmação de autoria/licença (defina videoBaseAutorizado: true apenas para vídeo próprio ou licenciado)',
+    );
+  }
   for (const cena of manifest.cenas) {
     for (const a of cena.afirmacoes) {
       if ((a.fonte === null || a.fonte.trim() === '') && !a.duvida) {
@@ -543,7 +631,9 @@ export function sceneCacheKey(scene: Scene, brief: VideoBrief): string {
     scene.pose !== undefined ||
     scene.expressao !== undefined ||
     scene.cenario !== undefined ||
-    scene.assets !== undefined;
+    scene.assets !== undefined ||
+    scene.videoBase !== undefined ||
+    scene.videoStartSec !== undefined;
   const material = JSON.stringify(
     temExtraVisual
       ? [
@@ -560,6 +650,8 @@ export function sceneCacheKey(scene: Scene, brief: VideoBrief): string {
             ...(scene.expressao !== undefined ? { expressao: scene.expressao } : {}),
             ...(scene.cenario !== undefined ? { cenario: scene.cenario } : {}),
             ...(scene.assets !== undefined ? { assets: scene.assets } : {}),
+            ...(scene.videoBase !== undefined ? { videoBase: scene.videoBase } : {}),
+            ...(scene.videoStartSec !== undefined ? { videoStartSec: scene.videoStartSec } : {}),
           },
         ]
       : [scene.narracao, scene.promptImagem, brief.estilo, brief.idioma, brief.formato],

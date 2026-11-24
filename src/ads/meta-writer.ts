@@ -92,9 +92,24 @@ export class ClaudeMcpMetaWriter implements MetaAdsWriter {
       'Use exatamente esses textos. Responda SÓ JSON: {"id": "<id do anúncio criado>"}.'));
   }
 
-  async getStatus(id: string) {
+  async getAdSetDailyBudgetCentavos(id: string) {
+    if (!/^[\w-]+$/.test(id)) throw new Error('id inválido para consulta de orçamento');
     const r = await this.call(this.tools.readEntities,
-      `Leia o item de anúncio (campanha, conjunto ou anúncio) de id ${id} e responda SÓ JSON: {"id": "${id}", "status": "<status efetivo>"}.`);
+      'Leia o conjunto de anúncios de id ' + id + '. Consulte o orçamento diário configurado no conjunto, em centavos de BRL. ' +
+      'Responda SÓ JSON: {"id": "' + id + '", "daily_budget_centavos": <número inteiro>}. ' +
+      'Se não houver orçamento diário no conjunto ou não conseguir ler o valor, responda com {"error": "orçamento diário do conjunto indisponível"}.');
+    if (r.id !== id || typeof r.daily_budget_centavos !== 'number' ||
+      !Number.isSafeInteger(r.daily_budget_centavos) || r.daily_budget_centavos < 0) {
+      throw new Error('não consegui conferir o orçamento diário do conjunto ' + id);
+    }
+    return r.daily_budget_centavos;
+  }
+
+  async getStatus(id: string) {
+    if (!/^[\w-]+$/.test(id)) throw new Error('id inválido para consulta de status');
+    const r = await this.call(this.tools.readEntities,
+      `Leia o item de anúncio (campanha, conjunto ou anúncio) de id ${id}. Use o status configurado no próprio item, não o status efetivo herdado da campanha ou conjunto. Responda SÓ JSON: {"id": "${id}", "status": "<status configurado>"}.`);
+    if (r.id !== id) throw new Error(`a Meta devolveu outro id ao ler o status de ${id}`);
     if (typeof r.status !== 'string' || !r.status) throw new Error(`não consegui ler o status de ${id}`);
     return r.status.toUpperCase();
   }

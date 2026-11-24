@@ -175,6 +175,20 @@ describe('prompt da pesquisa de nichos', () => {
     assert.match(p, /SÓ com JSON/);
     assert.ok(p.includes('"itens"'), 'mostra o formato esperado');
   });
+
+  test('usa domínios e tags das capturas com a estratégia de preço do PDF', () => {
+    const p = promptNichos('atividades infantis', 5);
+    assert.match(p, /vercel\.app/);
+    assert.match(p, /paginas\.lowify\.com\.br/);
+    assert.match(p, /atividades para imprimir/);
+    assert.match(p, /actividades para imprimir/);
+    assert.match(p, /printable activities/);
+    assert.match(p, /vercel\.app atividades pdf/);
+    assert.match(p, /ganhar dinheiro/);
+    assert.match(p, /de R\$ 197 por R\$ 67/);
+    assert.match(p, /R\$ 9,90 a R\$ 19,90/);
+    assert.match(p, /não trate o host compartilhado como se fosse um único anunciante/);
+  });
 });
 
 describe('planejador que passa de agente a agente', () => {

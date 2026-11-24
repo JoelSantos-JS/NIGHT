@@ -13,6 +13,9 @@ const MIME_TYPES = {
   '.webp': 'image/webp',
   '.gif': 'image/gif',
   '.svg': 'image/svg+xml',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
   '.wav': 'audio/wav',
   '.mp3': 'audio/mpeg',
   '.aac': 'audio/aac',
@@ -96,9 +99,11 @@ async function startAssetServer(props, silentWavPath) {
   const mappedScenes = (props.scenes ?? []).map((scene) => ({
     ...scene,
     imageUrl: registerLocal(scene.imageUrl),
+    videoUrl: registerLocal(scene.videoUrl),
     audioUrl: registerLocal(scene.audioUrl),
   }));
 
+  const baseVideoRoute = registerLocal(props.baseVideoUrl);
   let musicRoute = registerLocal(props.musicUrl);
   const hasAnyAudio = mappedScenes.some((s) => Boolean(s.audioUrl)) || Boolean(musicRoute);
   if (!hasAnyAudio && silentWavPath) {
@@ -155,9 +160,11 @@ async function startAssetServer(props, silentWavPath) {
   const rewrittenProps = {
     ...props,
     musicUrl: toUrl(musicRoute),
+    baseVideoUrl: toUrl(baseVideoRoute),
     scenes: mappedScenes.map((s) => ({
       ...s,
       imageUrl: toUrl(s.imageUrl),
+      videoUrl: toUrl(s.videoUrl),
       audioUrl: toUrl(s.audioUrl),
     })),
   };

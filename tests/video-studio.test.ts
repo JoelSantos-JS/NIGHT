@@ -393,4 +393,125 @@ describe('ponte Remotion e execução do VideoAgent sem Flow', () => {
       assert.equal(props.scenes.length, 2);
     }
   });
+
+  test('ad-creative (overlay-proprio vs inspiracao): exige videoBase autorizado e mapeia trim/mute', () => {
+    const brief = buildBrief({
+      tema: 'Criativo com vídeo-base próprio',
+      publico: 'gestores',
+      plataforma: 'reels',
+      duracaoAlvoSeg: 30,
+      estilo: 'ad-creative',
+      objetivo: 'testar ganchos mantendo vídeo próprio',
+    });
+
+    const baseManifest = {
+      version: MANIFEST_VERSION,
+      jobId: 'ad-overlay-1',
+      brief,
+      titulo: 'Oferta com overlay próprio',
+      motorVisual: 'remotion',
+      templateVisual: 'ad-creative',
+      fontes: [],
+      cenas: [
+        {
+          n: 1,
+          narracao: 'Gancho rápido em cima do vídeo próprio.',
+          duracaoEstimadaSeg: 15,
+          afirmacoes: [],
+          visual: 'Sobreposição de gancho',
+          promptImagem: '',
+          papelImagem: 'ilustracao',
+          realistaGeradaPorIA: false,
+          assetRef: null,
+          textoNaTela: 'PARE DE PERDER TEMPO',
+          assets: ['MODELO PRONTO', 'ACESSO IMEDIATO'],
+        },
+        {
+          n: 2,
+          narracao: 'Veja os detalhes e clique abaixo.',
+          duracaoEstimadaSeg: 15,
+          afirmacoes: [],
+          visual: 'Sobreposição de CTA',
+          promptImagem: '',
+          papelImagem: 'ilustracao',
+          realistaGeradaPorIA: false,
+          assetRef: null,
+          textoNaTela: 'CONHEÇA O GUIA',
+          videoStartSec: 8,
+        },
+      ],
+    };
+
+    // Sem videoBase, modo overlay-proprio é recusado.
+    const semBase = validateManifest({ ...baseManifest, modoCampanha: 'overlay-proprio' });
+    assert.equal(semBase.ok, false);
+    if (!semBase.ok) {
+      assert.ok(semBase.errors.some((e) => e.campo === 'videoBase'));
+    }
+
+    // Com videoBase mas sem videoBaseAutorizado: true, emite aviso e trava entrega final.
+    const naoAutorizado = validateManifest({
+      ...baseManifest,
+      modoCampanha: 'overlay-proprio',
+      videoBase: 'D:\\videos\\produto-base.mp4',
+    });
+    assert.equal(naoAutorizado.ok, true);
+    if (naoAutorizado.ok) {
+      assert.ok(naoAutorizado.avisos.some((a) => a.includes('videoBaseAutorizado')));
+      const finalCheck = readyForFinalRender(naoAutorizado.manifest);
+      assert.equal(finalCheck.pronto, false);
+      assert.ok(finalCheck.pendencias.some((p) => p.includes('videoBaseAutorizado')));
+    }
+
+    // Autorizado: libera entrega final e repassa baseVideoUrl / mute / offsets cumulativos e override.
+    const autorizado = validateManifest({
+      ...baseManifest,
+      modoCampanha: 'overlay-proprio',
+      videoBase: 'D:\\videos\\produto-base.mp4',
+      videoBaseAutorizado: true,
+      mutarVideoBase: true,
+    });
+    assert.equal(autorizado.ok, true);
+    if (!autorizado.ok) return;
+    assert.deepEqual(readyForFinalRender(autorizado.manifest), { pronto: true, pendencias: [] });
+
+    const plan = planRender(
+      autorizado.manifest,
+      {
+        imagePathFor: () => '',
+        audioFor: (n) => ({ path: `/tmp/ad-${n}.wav`, durationSec: n === 1 ? 3.2 : 2.8 }),
+      },
+      { outDir, preview: true, allowMissingImages: true },
+    );
+
+    const props = buildRemotionProps(plan, autorizado.manifest);
+    assert.equal(props.baseVideoUrl, 'D:\\videos\\produto-base.mp4');
+    assert.equal(props.muteBaseVideo, true);
+    assert.equal(props.scenes[0]?.videoUrl, 'D:\\videos\\produto-base.mp4');
+    assert.equal(props.scenes[0]?.videoStartSec, 0);
+    assert.equal(props.scenes[1]?.videoUrl, 'D:\\videos\\produto-base.mp4');
+    assert.equal(props.scenes[1]?.videoStartSec, 8);
+    assert.equal(props.scenes[1]?.cta, true);
+
+    // Sem override na cena 2, usa offset acumulado da cena 1 (3.2s).
+    const semOverride = validateManifest({
+      ...baseManifest,
+      modoCampanha: 'overlay-proprio',
+      videoBase: 'D:\\videos\\produto-base.mp4',
+      videoBaseAutorizado: true,
+      cenas: [baseManifest.cenas[0]!, { ...baseManifest.cenas[1]!, videoStartSec: undefined }],
+    });
+    assert.equal(semOverride.ok, true);
+    if (semOverride.ok) {
+      const propsAcum = buildRemotionProps(plan, semOverride.manifest);
+      assert.equal(propsAcum.scenes[1]?.videoStartSec, 3.2);
+    }
+
+    // sceneCacheKey reage a alterações de videoBase e videoStartSec.
+    const k1 = sceneCacheKey(autorizado.manifest.cenas[0]!, autorizado.manifest.brief);
+    const k2 = sceneCacheKey({ ...autorizado.manifest.cenas[0]!, videoBase: 'D:\\videos\\outro.mp4' }, autorizado.manifest.brief);
+    const k3 = sceneCacheKey({ ...autorizado.manifest.cenas[0]!, videoStartSec: 4 }, autorizado.manifest.brief);
+    assert.notEqual(k1, k2);
+    assert.notEqual(k1, k3);
+  });
 });
