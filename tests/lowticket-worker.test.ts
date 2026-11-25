@@ -45,10 +45,14 @@ class FakeLinks implements OfferLinksStore {
   constructor(private readonly checkoutUrl: string | null = null) {}
 
   async get(offerNumber: number): Promise<OfferLinks> {
-    return { offerNumber, paginaUrl: null, checkoutUrl: this.checkoutUrl, imagens: [] };
+    return { offerNumber, paginaUrl: null, checkoutUrl: this.checkoutUrl, imagens: [], campanha: {} };
   }
 
   async set(offerNumber: number, _field: LinkField, _value: string | string[]): Promise<OfferLinks> {
+    return this.get(offerNumber);
+  }
+
+  async setCampanha(offerNumber: number, _campanha: OfferLinks['campanha']): Promise<OfferLinks> {
     return this.get(offerNumber);
   }
 }

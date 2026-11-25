@@ -31,6 +31,7 @@ import { Narrator, type Synth } from '../video/narrate.ts';
 import { GitWorktreeManager } from '../workspaces/worktree-manager.ts';
 import { nightDataRoot, NightCoordinator, type CoordinatorOptions } from './coordinator.ts';
 import { ClaudeMcpMetaWriter } from '../ads/meta-writer.ts';
+import { GraphMetaWriter } from '../ads/meta-graph-writer.ts';
 import { ClaudeMcpMetaReader } from '../ads/meta-reader.ts';
 import { PgOfferLinks } from '../lowticket/links.ts';
 import { LowticketWorker } from '../lowticket/worker.ts';
@@ -351,7 +352,14 @@ export async function createNight(opts: CreateNightOptions = {}) {
     jobRunners,
     links: offerLinks,
     // A montagem cria tudo PAUSADO; ativar fica com o Joel no Gerenciador (chave de status desligada na Meta).
-    campaign: { writer: new ClaudeMcpMetaWriter({ workDir: join(paths.data, 'meta-mcp') }), adAccountId: metaAdAccount },
+    // Com o token do usuário de sistema, a montagem fala direto com a Graph API (sem modelo no meio);
+    // NIGHT_META_WRITER=mcp volta ao conector MCP da Meta.
+    campaign: {
+      writer: process.env.NIGHT_META_TOKEN?.trim() && process.env.NIGHT_META_WRITER !== 'mcp'
+        ? new GraphMetaWriter({ token: process.env.NIGHT_META_TOKEN })
+        : new ClaudeMcpMetaWriter({ workDir: join(paths.data, 'meta-mcp') }),
+      adAccountId: metaAdAccount,
+    },
     // Relatório é só leitura: uma sessão por pergunta, com a ferramenta de insights liberada.
     campaignReader: new ClaudeMcpMetaReader({ workDir: join(paths.data, 'meta-mcp'), tool: metaInsightsTool }),
   };

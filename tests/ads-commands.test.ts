@@ -58,17 +58,20 @@ class FakeWriter implements MetaAdsWriter {
   budgets = new Map<string, number>();
   private n = 0;
   async findCampaignByName() { this.calls.push('find'); return null; }
-  async createCampaign() { this.calls.push('campaign'); return { id: `c${++this.n}` }; }
-  async createAdSet(i: { orcamentoDiarioCentavos: number }) {
-    this.calls.push(`adset:${i.orcamentoDiarioCentavos}`);
-    const id = `s${++this.n}`;
+  async createCampaign(i: { orcamentoDiarioCentavos: number }) {
+    this.calls.push(`campaign:${i.orcamentoDiarioCentavos}`);
+    const id = `c${++this.n}`;
     this.budgets.set(id, i.orcamentoDiarioCentavos);
     return { id };
   }
+  async createAdSet() { this.calls.push('adset'); return { id: `s${++this.n}` }; }
   async createAd() { this.calls.push('ad'); return { id: `a${++this.n}` }; }
   async getStatus() { return 'PAUSED'; }
-  async getAdSetDailyBudgetCentavos(id: string) { return this.budgets.get(id) ?? 0; }
+  async getCampaignDailyBudgetCentavos(id: string) { return this.budgets.get(id) ?? 0; }
 }
+
+/** Pixel e página do Facebook: sem eles o rascunho tem pendência e nada vai à Meta. */
+const REGRAS = { pixelId: '1234567890', paginaFacebookId: '9876543210' };
 
 /** Leitor falso do M07: devolve números fixos e guarda o id e o período pedidos. */
 class FakeReader implements MetaInsightsReader {
@@ -137,8 +140,10 @@ describe('coordenador: produto e campanha', () => {
     assert.match((await night.handle(`monta a campanha da oferta ${n}`)).text, /pendência/);
     await links.set(n, 'pagina', 'https://loja.example/r');
     await links.set(n, 'imagens', ['https://i.example/1.png']);
+    assert.match((await night.handle(`monta a campanha da oferta ${n}`)).text, /pendência.*pixel/, 'sem pixel ainda há pendência');
+    await links.setCampanha(n, REGRAS);
     const r = await night.handle(`monta a campanha da oferta ${n}`);
-    assert.match(r.text, /aprovo montar a campanha da oferta \d+ com R\$ 20 por dia/);
+    assert.match(r.text, /aprovo montar a campanha da oferta \d+ com R\$ 15 por dia/);
     assert.match(r.detail ?? '', /PAUSADO/);
     assert.deepEqual(writer.calls, [], 'rascunho não chama a Meta');
   });
@@ -155,6 +160,7 @@ describe('coordenador: produto e campanha', () => {
     const n = await oferta(true);
     await links.set(n, 'pagina', 'https://loja.example/r');
     await links.set(n, 'imagens', ['https://i.example/1.png']);
+    await links.setCampanha(n, REGRAS);
     assert.match((await night.handle(`aprovo montar a campanha da oferta ${n}`)).text, /valor por dia/);
     assert.match((await make({ conta: null }).handle(`aprovo montar a campanha da oferta ${n} com R$ 20 por dia`)).text, /NIGHT_META_AD_ACCOUNT/);
     assert.deepEqual(writer.calls, []);
@@ -164,10 +170,11 @@ describe('coordenador: produto e campanha', () => {
     const n = await oferta(true);
     await links.set(n, 'pagina', 'https://loja.example/r');
     await links.set(n, 'imagens', ['https://i.example/1.png', 'https://i.example/2.png']);
+    await links.setCampanha(n, REGRAS);
     const r = await night.handle(`aprovo montar a campanha da oferta ${n} com R$ 25 por dia`);
     assert.match(r.text, /PAUSADA: 2 anúncio\(s\), R\$ 25 por dia/);
     assert.match(r.text, /ative você no Gerenciador/);
-    assert.deepEqual(writer.calls, ['find', 'campaign', 'adset:2500', 'ad', 'ad']);
+    assert.deepEqual(writer.calls, ['find', 'campaign:2500', 'adset', 'ad', 'ad']);
     const antes = writer.calls.length;
     await night.handle(`aprovo montar a campanha da oferta ${n} com R$ 25 por dia`);
     assert.equal(writer.calls.length, antes, 'segunda frase não cria nada');
@@ -179,16 +186,69 @@ describe('coordenador: produto e campanha', () => {
     const n = await oferta(true);
     await links.set(n, 'pagina', 'https://loja.example/r');
     await links.set(n, 'imagens', ['https://i.example/1.png']);
+    await links.setCampanha(n, REGRAS);
     const painel = make();
     const [a, b] = await Promise.all([
       painel.decidir({ tipo: 'campanha', numero: n, valorBRL: 25 }),
       night.handle(`aprovo montar a campanha da oferta ${n} com R$ 25 por dia`),
     ]);
-    assert.equal(writer.calls.filter((c) => c === 'campaign').length, 1, 'uma campanha só na Meta');
+    assert.equal(writer.calls.filter((c) => c.startsWith('campaign')).length, 1, 'uma campanha só na Meta');
     assert.equal(writer.calls.filter((c) => c.startsWith('adset')).length, 1);
     const textos = [a.text, b.text];
     assert.equal(textos.filter((t) => /PAUSADA/.test(t)).length, 1, textos.join(' | '));
     assert.equal(textos.filter((t) => /já está sendo montada/.test(t)).length, 1, textos.join(' | '));
+  });
+
+  test('sem pixel e página do Facebook a montagem é recusada sem chamar a Meta', async () => {
+    const n = await oferta(true);
+    await links.set(n, 'pagina', 'https://loja.example/r');
+    await links.set(n, 'imagens', ['https://i.example/1.png']);
+    const r = await night.handle(`aprovo montar a campanha da oferta ${n} com R$ 15 por dia`);
+    assert.match(r.text, /Não montei: .*pixel.*página do Facebook/);
+    assert.deepEqual(writer.calls, []);
+  });
+
+  test('2 vídeos + 2 imagens montam 2 campanhas pausadas com metade do valor cada', async () => {
+    const n = await oferta(true);
+    await links.set(n, 'pagina', 'https://loja.example/r');
+    await links.set(n, 'imagens', ['https://i.example/1.png', 'https://i.example/2.png']);
+    await links.setCampanha(n, {
+      ...REGRAS,
+      videos: [
+        { url: 'https://v.example/1.mp4', miniatura: 'https://v.example/1.jpg' },
+        { url: 'https://v.example/2.mp4', miniatura: 'https://v.example/2.jpg' },
+      ],
+      estrutura: 'campanha-por-teste',
+    });
+    const rascunho = await night.handle(`monta a campanha da oferta ${n}`);
+    assert.match(rascunho.text, /2 teste\(s\).*R\$ 30 por dia/);
+    const r = await night.handle(`aprovo montar a campanha da oferta ${n} com R$ 30 por dia`);
+    assert.match(r.text, /PAUSADA: 4 anúncio\(s\), R\$ 30 por dia/);
+    assert.deepEqual(writer.calls, ['find', 'campaign:1500', 'adset', 'ad', 'ad', 'find', 'campaign:1500', 'adset', 'ad', 'ad']);
+  });
+
+  test('valor que não divide entre os testes é recusado sem chamar a Meta; um valor que divide monta depois', async () => {
+    const n = await oferta(true);
+    await links.set(n, 'pagina', 'https://loja.example/r');
+    await links.set(n, 'imagens', ['https://i.example/1.png', 'https://i.example/2.png']);
+    await links.setCampanha(n, {
+      ...REGRAS,
+      videos: [
+        { url: 'https://v.example/1.mp4', miniatura: 'https://v.example/1.jpg' },
+        { url: 'https://v.example/2.mp4', miniatura: 'https://v.example/2.jpg' },
+      ],
+      estrutura: 'campanha-por-teste',
+    });
+    const recusa = await night.handle(`aprovo montar a campanha da oferta ${n} com R$ 15,01 por dia`);
+    assert.match(recusa.text, /Não montei: .*não se divide/);
+    assert.equal(writer.calls.length, 0, 'recusa não chama a Meta');
+    const r = await night.handle(`aprovo montar a campanha da oferta ${n} com R$ 30 por dia`);
+    assert.match(r.text, /PAUSADA: 4 anúncio\(s\)/);
+    assert.equal(writer.calls.filter((c) => c.startsWith('campaign')).length, 2);
+    // A recusa devolve o trabalho a 'retryable': a segunda aprovação pega a vaga de 'running' e termina 'succeeded'.
+    const jobs = (await mem.listJobs({ kind: 'campanha' })).filter((j) => j.params.offerNumber === n);
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]!.status, 'succeeded');
   });
 
   test('status da campanha: sem montagem e sem conector, nada é inventado (M07)', async () => {
@@ -232,6 +292,42 @@ describe('coordenador: produto e campanha', () => {
     assert.match(tela, /Alcance: 2\.500/);
     assert.match(tela, /Compras atribuídas pela Meta: 3/);
     assert.match(tela, /Vendas e lucro não vêm da Meta/);
+  });
+
+  test('status com 2 campanhas (2 testes) lê as duas e soma gasto, impressões e cliques', async () => {
+    const { job } = await mem.createJob({
+      kind: 'campanha', origin: 'texto', idempotencyKey: 'campanha:teste2', params: { offerNumber: 2 },
+    });
+    await mem.recordJobEffect(job.id, 'meta:campaign:1', 'meta', 'campanha id=778');
+    await mem.recordJobEffect(job.id, 'meta:campaign', 'meta', 'campanha id=777');
+
+    const porId: Record<string, Partial<CampaignInsights>> = {
+      777: { gastoBRL: 45.2, impressoes: 3200, cliques: 51, ctr: 1.6, cpc: 0.89, compras: 3 },
+      778: { gastoBRL: 10, impressoes: 800, cliques: 9, ctr: 1.1, cpc: 1.11, compras: 1 },
+    };
+    const lidos: string[] = [];
+    const reader: MetaInsightsReader = {
+      async insights(campaignId, periodo) {
+        lidos.push(campaignId);
+        return {
+          campaignId, status: 'PAUSED', gastoBRL: 0, impressoes: 0, cliques: 0, ctr: 0, cpc: 0,
+          alcance: 100, compras: 0, periodo, lidoEm: '2026-11-17T12:00:00.000Z', ...porId[campaignId],
+        };
+      },
+    };
+    const r = await make({ reader }).handle('como está a campanha da oferta 2?');
+    assert.deepEqual(lidos, ['777', '778'], 'as duas campanhas, na ordem dos testes');
+    assert.match(r.text, /R\$ 55,20 gastos/);
+    assert.match(r.text, /4\.000 impressões/);
+    assert.match(r.text, /60 cliques/);
+    assert.match(r.text, /CTR 1,5%/, 'CTR recalculado: 60 / 4.000');
+    assert.match(r.text, /Status: pausada/);
+    const tela = r.detail ?? '';
+    assert.match(tela, /777/);
+    assert.match(tela, /778/);
+    assert.match(tela, /Gasto: R\$ 55,20/);
+    assert.match(tela, /CPC: R\$ 0,92/, 'CPC recalculado: 55,20 / 60');
+    assert.match(tela, /Compras atribuídas pela Meta: 4/);
   });
 
   test('gerar produto de oferta aprovada registra o trabalho', async () => {

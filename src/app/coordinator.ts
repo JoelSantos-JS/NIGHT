@@ -20,7 +20,7 @@ import type { ChatAgent } from '../agents/chat.ts';
 import { diffStat, otherAgent, type TaskScheduler } from '../agents/scheduler.ts';
 import type { JobRunner } from '../jobs/runner.ts';
 import {
-  buildCampaignDraft, buildPausedCampaign, describeDraft, type MetaAdsWriter,
+  buildCampaignDraft, buildPausedCampaign, campaignIdsFromEvents, describeDraft, type MetaAdsWriter,
 } from '../ads/campaign.ts';
 import type { CampaignInsights, InsightsPeriod, MetaInsightsReader } from '../ads/meta-reader.ts';
 import type { OfferLinksStore } from '../lowticket/links.ts';
@@ -1351,9 +1351,10 @@ export class NightCoordinator {
   private async draftFor(number: number) {
     const offer = await this.radar!.getOffer(number);
     if (!offer) return null;
-    const links = this.links ? await this.links.get(number) : { paginaUrl: null, imagens: [] as string[] };
+    const links = this.links ? await this.links.get(number) : { paginaUrl: null, imagens: [] as string[], campanha: {} };
     const draft = buildCampaignDraft(offer.proposal as unknown as OfferProposal, {
       offerNumber: number, offerVersion: offer.version, destinoUrl: links.paginaUrl, imagens: links.imagens,
+      config: links.campanha ?? {},
     });
     return { offer, draft };
   }
@@ -1430,11 +1431,13 @@ export class NightCoordinator {
         text: say(language,
           `Montei a campanha da oferta ${intent.number} PAUSADA: ${r.adIds.length} anúncio(s), R$ ${intent.budgetBRL} por dia. Para ir ao ar, ative você no Gerenciador de Anúncios.`,
           `Built the campaign for offer ${intent.number} PAUSED: ${r.adIds.length} ad(s), R$ ${intent.budgetBRL} per day. To go live, activate it yourself in Ads Manager.`),
-        detail: `campanha ${r.campaignId} · conjunto ${r.adSetId} · anúncios ${r.adIds.join(', ')}${r.reaproveitada ? ' (campanha já existia, reaproveitada)' : ''}`,
+        detail: `campanha(s) ${r.campaignIds.join(', ')} · conjunto(s) ${r.adSetIds.join(', ')} · anúncios ${r.adIds.join(', ')}${r.reaproveitada ? ' (campanha já existia, reaproveitada)' : ''}`,
       };
     }
     if (r.status === 'recusada') {
-      if (atual?.status === 'running') await this.memory.transitionJob(job.id, 'failed', { source: 'owner', message: 'montagem recusada', error: r.motivo });
+      // Recusa não toca na Meta: o trabalho volta a esperar outra aprovação (com 'failed', a próxima
+      // aprovação rodaria sem pegar a vaga de 'running' e sem a trava contra dois "aprovo" juntos).
+      if (atual?.status === 'running') await this.memory.transitionJob(job.id, 'retryable', { source: 'owner', message: 'montagem recusada', error: r.motivo });
       return { text: say(language, `Não montei: ${r.motivo}.`, `Not built: ${r.motivo}.`) };
     }
     if (atual?.status === 'running') await this.memory.transitionJob(job.id, 'retryable', { source: 'meta', message: 'montagem parada', error: r.motivo });
@@ -1444,11 +1447,9 @@ export class NightCoordinator {
     };
   }
 
-  /** Id da campanha gravado no efeito 'meta:campaign' ("campanha id=..."): a fonte é o banco, não a conversa. */
-  private async campaignIdOf(jobId: string): Promise<string | null> {
-    const ev = (await this.memory.listJobEvents(jobId)).find((e) => e.effectKey === 'meta:campaign');
-    if (!ev) return null;
-    return /id=(\S+)/.exec(ev.message)?.[1] ?? null;
+  /** Ids das campanhas gravados nos efeitos 'meta:campaign' e 'meta:campaign:k' (um por teste): a fonte é o banco, não a conversa. */
+  private async campaignIdsOf(jobId: string): Promise<string[]> {
+    return campaignIdsFromEvents(await this.memory.listJobEvents(jobId));
   }
 
   /**
@@ -1463,12 +1464,12 @@ export class NightCoordinator {
     if (number === null) return { text: this.askOfferNumber(language) };
 
     // Jobs da oferta vêm do mais novo para o mais antigo; vale o primeiro com campanha de verdade.
-    let campaignId: string | null = null;
+    let campaignIds: string[] = [];
     for (const job of (await this.memory.listJobs({ kind: 'campanha' })).filter((j) => j.params.offerNumber === number)) {
-      campaignId = await this.campaignIdOf(job.id);
-      if (campaignId) break;
+      campaignIds = await this.campaignIdsOf(job.id);
+      if (campaignIds.length) break;
     }
-    if (!campaignId) {
+    if (!campaignIds.length) {
       return { text: say(language, `A campanha da oferta ${number} ainda não foi montada.`,
         `The campaign for offer ${number} hasn't been built yet.`) };
     }
@@ -1481,7 +1482,10 @@ export class NightCoordinator {
     const periodo = lastSevenDays();
     let insights: CampaignInsights;
     try {
-      insights = await this.campaignReader.insights(campaignId, periodo);
+      // Um teste por campanha: o gasto da oferta é a soma de todas, nunca só a primeira.
+      const lidas: CampaignInsights[] = [];
+      for (const id of campaignIds) lidas.push(await this.campaignReader.insights(id, periodo));
+      insights = lidas.length === 1 ? lidas[0]! : somaInsights(lidas);
     } catch (err) {
       return { text: say(language, `Não consegui ler os números da Meta: ${(err as Error).message.slice(0, 300)}.`,
         `I could not read the numbers from Meta: ${(err as Error).message.slice(0, 300)}.`) };
@@ -1882,4 +1886,27 @@ async function defaultBranchOf(repo: string): Promise<{ ok: true; name: string }
       resolve(err ? { ok: false } : { ok: true, name: stdout.trim() });
     });
   });
+}
+
+/** Junta os números de várias campanhas da mesma oferta; um número ausente em qualquer uma fica ausente na soma. */
+function somaInsights(lidas: CampaignInsights[]): CampaignInsights {
+  const soma = (f: (i: CampaignInsights) => number | null | undefined) =>
+    lidas.every((i) => typeof f(i) === 'number') ? lidas.reduce((t, i) => t + (f(i) as number), 0) : null;
+  const gastoBRL = soma((i) => i.gastoBRL);
+  const impressoes = soma((i) => i.impressoes);
+  const cliques = soma((i) => i.cliques);
+  const statuses = [...new Set(lidas.map((i) => i.status))];
+  const base = lidas[0]!;
+  return {
+    ...base,
+    campaignId: lidas.map((i) => i.campaignId).join(', '),
+    status: statuses.length === 1 ? statuses[0]! : null,
+    gastoBRL,
+    impressoes,
+    cliques,
+    ctr: impressoes && cliques !== null ? (cliques / impressoes) * 100 : null,
+    cpc: cliques && gastoBRL !== null ? gastoBRL / cliques : null,
+    ...(lidas.some((i) => i.alcance !== undefined) ? { alcance: null } : {}),
+    ...(lidas.some((i) => i.compras !== undefined) ? { compras: soma((i) => i.compras) } : {}),
+  };
 }
