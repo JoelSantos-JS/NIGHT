@@ -1,5 +1,60 @@
 # NIGHT: passagem para o próximo chat
 
+**Escrito em 25/11/2026.** Leia a seção de 25/11 primeiro; depois a passagem de 24/11 (mais abaixo) e
+[.agents/em-andamento.md](../.agents/em-andamento.md). Ids de campanha, pixel e página ficam fora do git, em
+`D:\NIGHT-data\aprendercoreano\PASSAGEM.md` (o repositório é público).
+
+## 25/11: Coreano para Iniciantes no ar e agente de campanha ajustado com teste real
+
+### O que está no ar
+- **Site:** https://www.aprendacoreano.online (Vercel, projeto `aprendercoreano`). Código em
+  `D:\NIGHT-data\aprendercoreano\site\` e no repositório **privado** `JoelSantos-JS/aprendercoreano-site`.
+  O domínio é **aprendA**coreano, não "aprender".
+- **Cakto:** produto "Coreano para Iniciantes", R$ 14,90. Checkout personalizado (banner com o prazo, lista do que vem,
+  garantia) e popup de saída com oferta de R$ 12,90. O PDF vai por link do Drive no e-mail. O Soaken virou bônus grátis.
+- **Preço de lançamento até 30/11 às 23:59, depois R$ 19,90.** No dia 1/12, subir o preço na Cakto (produto e oferta de
+  saída, sugestão R$ 16,90), no site e no banner do checkout. Senão o prazo vira mentira.
+- **Pixel:** a Cakto dá "Erro interno do servidor" ao salvar o pixel, e a API dela descarta o campo sem avisar. O pixel
+  está **no site**: PageView e ViewContent na página de venda, InitiateCheckout no clique e **Purchase na página de
+  obrigado**. Há **1 compra falsa** no pixel (teste de 24/11). **Nunca abrir obrigado.html para testar.**
+- **Campanha do Joel, COREANO1:** ativa, R$ 15/dia, 2 conjuntos com vídeo + imagem, Stories + Reels. Problemas que o
+  Joel ainda não mandou corrigir (ela está gastando, mexer só com o ok dele):
+  - os anúncios saem no Instagram **@explicaado0** (Explica do Zero);
+  - público Advantage+ ligado;
+  - "vários anunciantes" ligado;
+  - algumas melhorias automáticas ligadas;
+  - 2 anúncios com "Ver detalhes" e nenhum com UTM.
+- **Criativos:** `D:\NIGHT-data\aprendercoreano\criativos\`. A pasta `PARA_SUBIR\` tem cada formato: imagem em 1:1, 9:16,
+  1,91:1 e 4:5; vídeo em 9:16 e 4:5. Os vídeos têm voz do ElevenLabs (plano grátis, que **não permite uso comercial**:
+  assinar o Starter) e fotos do Pexels (créditos em `criativos\doramas\CREDITOS.txt`). Para renderizar de novo,
+  `python render-video.py a` (ou `b`) dentro da pasta.
+
+### Agente de campanha (commit 4cf2cac)
+- Fala com a Meta pela **Graph API, com `NIGHT_META_TOKEN`**, sem MCP. `NIGHT_META_WRITER=mcp` volta ao conector.
+- Padrão copiado da COREANO1: **1 campanha** com o valor inteiro, **1 conjunto por teste** (vídeo + imagem),
+  **Stories + Reels**. Opções: `estrutura: 'campanha-por-teste'` e `posicionamentos: 'feed-reels'`.
+- Sempre: tudo pausado, compra no pixel da oferta, público fixo sem Advantage+, melhorias e "vários anunciantes"
+  desligados, UTMs.
+- Regras de cada oferta em `offer_links.campanha` (migração 013): pixel, página, gênero, idade, início, vídeos, estrutura.
+- **Teste real com a oferta 9 (Coreano):** campanha e conjunto saíram certos. O anúncio foi barrado porque o **app "MCP"
+  da Meta está em modo de desenvolvimento**. Sem pôr o app em "Ao vivo" (precisa da URL de privacidade
+  https://www.aprendacoreano.online/privacidade.html), nenhum anúncio sai pela API. As campanhas vazias foram apagadas.
+- Para montar a oferta 9 de novo: o trabalho antigo aponta para a campanha apagada e vai parar com "DELETED". Fazer uma
+  **versão nova da oferta** (nova chave de trabalho) e aprovar de novo.
+
+### Pendências
+1. App da Meta em "Ao vivo" (Joel).
+2. Corrigir a COREANO1 (só com o ok do Joel).
+3. Subir o preço em 1/12.
+4. Plano pago do ElevenLabs.
+5. Bônus (PDFs extras e acesso ao Soaken) ainda não estão no link de entrega.
+6. O NIGHT rodado por script não fecha sozinho depois do `close()` (visto no teste real).
+7. Mudanças de outras pessoas continuam sem commit (vídeo, `keywordsDoRadar` do Radar, painel): não são deste chat.
+
+---
+
+## Passagem de 24/11
+
 **Escrito em 24/11/2026.** O estado mais novo está em [PASSAGEM_ANTIGRAVITY.md](PASSAGEM_ANTIGRAVITY.md): ler aquele primeiro. Para um Claude novo e para o Joel. Leia inteiro antes de mexer, e depois leia
 [.agents/em-andamento.md](../.agents/em-andamento.md): os recados do Codex de 21 e 22/11 estão lá, com os detalhes.
 
